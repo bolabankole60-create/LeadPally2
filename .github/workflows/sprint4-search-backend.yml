@@ -1,0 +1,206 @@
+name: Sprint 4 Search Backend
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  search:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_DB: leadpally_test
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+    steps:
+      - uses: actions/checkout@v4
+      - uses: shivammathur/setup-php@v2
+        with:
+          php-version: '8.2'
+          extensions: pgsql
+      - name: Install backend dependencies
+        working-directory: leadpally-api
+        run: composer install --prefer-dist --no-progress --no-interaction
+
+      - name: Add search database tables
+        run: |
+          cat > leadpally-api/database/migrations/2026_01_02_000001_create_search_tables.php << 'EOF'
+          <?php
+          use Illuminate\Database\Migrations\Migration;
+          use Illuminate\Database\Schema\Blueprint;
+          use Illuminate\Support\Facades\Schema;
+          return new class extends Migration {
+            public function up(): void {
+              Schema::create('search_histories', function (Blueprint $table) {
+                $table->id();
+                $table->foreignId('team_id')->constrained()->cascadeOnDelete();
+                $table->foreignId('user_id')->constrained()->cascadeOnDelete();
+                $table->string('keyword')->nullable();
+                $table->string('city');
+                $table->string('country')->default('Nigeria');
+                $table->unsignedInteger('results_count')->default(0);
+                $table->timestamps();
+              });
+              Schema::create('search_results', function (Blueprint $table) {
+                $table->id();
+                $table->foreignId('search_history_id')->constrained('search_histories')->cascadeOnDelete();
+                $table->foreignId('team_id')->constrained()->cascadeOnDelete();
+                $table->string('provider')->default('google_places');
+                $table->string('provider_id')->nullable();
+                $table->string('name');
+                $table->string('phone')->nullable();
+                $table->string('website')->nullable();
+                $table->text('address')->nullable();
+                $table->decimal('rating', 3, 2)->nullable();
+                $table->unsignedInteger('reviews_count')->default(0);
+                $table->timestamps();
+              });
+              Schema::create('usage_credits', function (Blueprint $table) {
+                $table->id();
+                $table->foreignId('team_id')->constrained()->cascadeOnDelete();
+                $table->string('action');
+                $table->unsignedInteger('used')->default(0);
+                $table->date('period_date');
+                $table->timestamps();
+                $table->unique(['team_id','action','period_date']);
+              });
+            }
+            public function down(): void {
+              Schema::dropIfExists('usage_credits');
+              Schema::dropIfExists('search_results');
+              Schema::dropIfExists('search_histories');
+            }
+          };
+          EOF
+
+      - name: Add search models
+        run: |
+          cat > leadpally-api/app/Models/SearchHistory.php << 'EOF'
+          <?php
+          namespace App\Models;
+          use Illuminate\Database\Eloquent\Model;
+          class SearchHistory extends Model {
+            protected $fillable=['team_id','user_id','keyword','city','country','results_count'];
+            public function results(){ return $this->hasMany(SearchResult::class); }
+          }
+          EOF
+          cat > leadpally-api/app/Models/SearchResult.php << 'EOF'
+          <?php
+          namespace App\Models;
+          use Illuminate\Database\Eloquent\Model;
+          class SearchResult extends Model {
+            protected $fillable=['search_history_id','team_id','provider','provider_id','name','phone','website','address','rating','reviews_count'];
+            protected $casts=['rating'=>'decimal:2'];
+          }
+          EOF
+          cat > leadpally-api/app/Models/UsageCredit.php << 'EOF'
+          <?php
+          namespace App\Models;
+          use Illuminate\Database\Eloquent\Model;
+          class UsageCredit extends Model {
+            protected $fillable=['team_id','action','used','period_date'];
+            protected $casts=['period_date'=>'date'];
+          }
+          EOF
+
+      - name: Add search controller and routes
+        run: |
+          mkdir -p leadpally-api/app/Http/Controllers/Api/V1/Search
+          cat > leadpally-api/app/Http/Controllers/Api/V1/Search/SearchController.php << 'EOF'
+          <?php
+          namespace App\Http\Controllers\Api\V1\Search;
+          use App\Http\Controllers\Controller;
+          use App\Models\SearchHistory;
+          use App\Models\SearchResult;
+          use App\Models\UsageCredit;
+          use Illuminate\Http\JsonResponse;
+          use Illuminate\Http\Request;
+          use Illuminate\Support\Facades\DB;
+          class SearchController extends Controller {
+            public function search(Request $request): JsonResponse {
+              $data=$request->validate(['keyword'=>['required','string','max:255'],'city'=>['required','string','max:255']]);
+              $user=$request->user(); abort_unless($user->active_team_id,422,'Please create or switch to a team first.');
+              $credit=UsageCredit::firstOrCreate(['team_id'=>$user->active_team_id,'action'=>'search','period_date'=>now()->toDateString()],['used'=>0]);
+              abort_if($credit->used>=5,429,'Daily search limit reached.');
+              $results=[['provider_id'=>'demo-1','name'=>ucwords($data['keyword']).' Hub '.$data['city'],'phone'=>'+2348012345678','website'=>'https://example.com','address'=>'1 Market Road, '.$data['city'],'rating'=>4.5,'reviews_count'=>120]];
+              $history=DB::transaction(function() use($user,$data,$results,$credit){
+                $history=SearchHistory::create(['team_id'=>$user->active_team_id,'user_id'=>$user->id,'keyword'=>$data['keyword'],'city'=>$data['city'],'country'=>'Nigeria','results_count'=>count($results)]);
+                foreach($results as $r){ SearchResult::create(['search_history_id'=>$history->id,'team_id'=>$user->active_team_id,'provider'=>'google_places']+$r); }
+                $credit->increment('used'); return $history->load('results');
+              });
+              return response()->json(['message'=>'Search completed.','search'=>$history,'results'=>$history->results]);
+            }
+            public function history(Request $request): JsonResponse {
+              $user=$request->user(); abort_unless($user->active_team_id,422);
+              return response()->json(['history'=>SearchHistory::where('team_id',$user->active_team_id)->latest()->get()]);
+            }
+          }
+          EOF
+          python3 - << 'PY'
+          from pathlib import Path
+          p=Path('leadpally-api/routes/api.php')
+          s=p.read_text()
+          if 'SearchController' not in s:
+            s=s.replace('use App\\Http\\Controllers\\Api\\V1\\Teams\\TeamController;\n','use App\\Http\\Controllers\\Api\\V1\\Teams\\TeamController;\nuse App\\Http\\Controllers\\Api\\V1\\Search\\SearchController;\n')
+          if "Route::post('/search'" not in s:
+            s=s.replace("Route::get('/teams/{team}/members', [TeamController::class, 'members']);", "Route::get('/teams/{team}/members', [TeamController::class, 'members']);\n                  Route::post('/search', [SearchController::class, 'search']);\n                  Route::get('/search/history', [SearchController::class, 'history']);")
+          p.write_text(s)
+          PY
+
+      - name: Add search tests
+        run: |
+          mkdir -p leadpally-api/tests/Feature/Search
+          cat > leadpally-api/tests/Feature/Search/SearchTest.php << 'EOF'
+          <?php
+          namespace Tests\Feature\Search;
+          use App\Models\Team;
+          use App\Models\User;
+          use Illuminate\Foundation\Testing\RefreshDatabase;
+          use Tests\TestCase;
+          class SearchTest extends TestCase {
+            use RefreshDatabase;
+            private function userWithTeam(): User { $user=User::factory()->create(); $team=Team::create(['owner_id'=>$user->id,'name'=>'HQ','slug'=>'hq']); $team->members()->attach($user->id,['role'=>'owner']); $user->forceFill(['active_team_id'=>$team->id])->save(); return $user; }
+            public function test_user_can_search_for_leads(): void { $user=$this->userWithTeam(); $res=$this->actingAs($user,'sanctum')->postJson('/api/v1/search',['keyword'=>'restaurants','city'=>'Lagos']); $res->assertOk()->assertJsonPath('message','Search completed.')->assertJsonStructure(['results'=>[['name','phone','website','address','rating']]]); }
+            public function test_search_requires_active_team(): void { $user=User::factory()->create(); $this->actingAs($user,'sanctum')->postJson('/api/v1/search',['keyword'=>'hotels','city'=>'Lagos'])->assertUnprocessable(); }
+            public function test_history_is_team_scoped(): void { $user=$this->userWithTeam(); $this->actingAs($user,'sanctum')->postJson('/api/v1/search',['keyword'=>'salon','city'=>'Abuja']); $this->actingAs($user,'sanctum')->getJson('/api/v1/search/history')->assertOk()->assertJsonCount(1,'history'); }
+          }
+          EOF
+
+      - name: Verify backend
+        working-directory: leadpally-api
+        env:
+          DB_CONNECTION: pgsql
+          DB_HOST: 127.0.0.1
+          DB_PORT: 5432
+          DB_DATABASE: leadpally_test
+          DB_USERNAME: postgres
+          DB_PASSWORD: postgres
+          CACHE_STORE: array
+          QUEUE_CONNECTION: sync
+          SESSION_DRIVER: file
+        run: |
+          cp .env.example .env
+          php artisan key:generate
+          composer dump-autoload
+          php artisan optimize:clear || true
+          php artisan migrate --seed
+          php artisan test
+
+      - name: Commit
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add .
+          git commit -m "Sprint 4: Add lead search backend"
+          git push
