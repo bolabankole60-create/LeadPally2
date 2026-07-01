@@ -1,6 +1,10 @@
 name: Sprint 9 Lead Scoring
 
 on:
+  push:
+    paths:
+      - 'leadpally-api/**'
+      - '.github/workflows/sprint9-lead-scoring.yml'
   workflow_dispatch:
 
 jobs:
