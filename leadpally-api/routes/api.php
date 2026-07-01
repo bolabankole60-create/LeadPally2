@@ -3,7 +3,7 @@
 use App\Http\Controllers\Api\V1\Auth\AuthController;
 use App\Http\Controllers\Api\V1\Campaigns\CampaignController;
 use App\Http\Controllers\Api\V1\Crm\LeadController;
-use App\Http\Controllers\Api\V1\LeadScoring\LeadScoringController;
+use App\Http\Controllers\Api\V1\Scoring\LeadScoringController;
 use App\Http\Controllers\Api\V1\Search\SearchController;
 use App\Http\Controllers\Api\V1\Teams\TeamController;
 use App\Http\Controllers\Api\V1\Workflows\WorkflowController;
@@ -35,7 +35,7 @@ Route::prefix('v1')->group(function () {
 
         Route::get('/lead-scoring/rules', [LeadScoringController::class, 'rules']);
         Route::post('/lead-scoring/rules', [LeadScoringController::class, 'createRule']);
-        Route::post('/leads/{lead}/recalculate-score', [LeadScoringController::class, 'recalculate']);
+        Route::post('/leads/{lead}/calculate-score', [LeadScoringController::class, 'calculate']);
         Route::get('/leads/{lead}/score-history', [LeadScoringController::class, 'history']);
 
         Route::get('/leads', [LeadController::class, 'index']);
