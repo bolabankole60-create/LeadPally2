@@ -135,8 +135,18 @@ jobs:
           s=p.read_text()
           if 'ProductivityController' not in s:
               s=s.replace('use App\\Http\\Controllers\\Api\\V1\\Crm\\LeadController;\n','use App\\Http\\Controllers\\Api\\V1\\Crm\\LeadController;\nuse App\\Http\\Controllers\\Api\\V1\\Productivity\\ProductivityController;\n')
-          if "Route::post('/leads/bulk/status'" not in s:
-              s=s.replace("Route::post('/leads/{lead}/tags', [LeadController::class, 'tag']);", "Route::post('/leads/{lead}/tags', [LeadController::class, 'tag']);\n                  Route::post('/leads/bulk/status', [ProductivityController::class, 'bulkStatus']);\n                  Route::post('/leads/bulk/favorite', [ProductivityController::class, 'bulkFavorite']);\n                  Route::post('/leads/bulk/delete', [ProductivityController::class, 'bulkDelete']);\n                  Route::get('/leads/reminders', [ProductivityController::class, 'reminders']);\n                  Route::get('/leads/duplicates', [ProductivityController::class, 'duplicates']);\n                  Route::get('/activity-logs', [ProductivityController::class, 'activities']);")
+          fixed="""                  Route::post('/leads/bulk/status', [ProductivityController::class, 'bulkStatus']);
+                  Route::post('/leads/bulk/favorite', [ProductivityController::class, 'bulkFavorite']);
+                  Route::post('/leads/bulk/delete', [ProductivityController::class, 'bulkDelete']);
+                  Route::get('/leads/reminders', [ProductivityController::class, 'reminders']);
+                  Route::get('/leads/duplicates', [ProductivityController::class, 'duplicates']);
+                  Route::get('/activity-logs', [ProductivityController::class, 'activities']);
+"""
+          for line in fixed.splitlines(True):
+              s=s.replace(line,'')
+          marker="                  Route::get('/leads/{lead}', [LeadController::class, 'show']);"
+          if marker in s:
+              s=s.replace(marker, fixed+marker)
           p.write_text(s)
           PY
 
