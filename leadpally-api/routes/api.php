@@ -3,6 +3,7 @@
 use App\Http\Controllers\Api\V1\Auth\AuthController;
 use App\Http\Controllers\Api\V1\Teams\TeamController;
 use App\Http\Controllers\Api\V1\Search\SearchController;
+use App\Http\Controllers\Api\V1\Crm\LeadController;
 use Illuminate\Support\Facades\Route;
 
 Route::get('/health', fn () => response()->json(['status'=>'healthy','timestamp'=>now()->toIso8601String()]));
@@ -22,5 +23,11 @@ Route::prefix('v1')->group(function () {
         Route::get('/teams/{team}/members', [TeamController::class, 'members']);
                   Route::post('/search', [SearchController::class, 'search']);
                   Route::get('/search/history', [SearchController::class, 'history']);
+                  Route::get('/leads', [LeadController::class, 'index']);
+                  Route::post('/leads', [LeadController::class, 'store']);
+                  Route::get('/leads/{lead}', [LeadController::class, 'show']);
+                  Route::put('/leads/{lead}', [LeadController::class, 'update']);
+                  Route::post('/leads/{lead}/notes', [LeadController::class, 'note']);
+                  Route::post('/leads/{lead}/tags', [LeadController::class, 'tag']);
     });
 });
