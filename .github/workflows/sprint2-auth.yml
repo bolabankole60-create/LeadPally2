@@ -1,0 +1,461 @@
+name: Sprint 2 Auth Module
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  auth:
+    name: Implement authentication module
+    runs-on: ubuntu-latest
+
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_DB: leadpally_test
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup PHP
+        uses: shivammathur/setup-php@v2
+        with:
+          php-version: '8.2'
+          extensions: pgsql
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: leadpally-frontend/package-lock.json
+
+      - name: Install backend dependencies
+        working-directory: leadpally-api
+        run: composer install --prefer-dist --no-progress --no-interaction
+
+      - name: Install frontend dependencies
+        working-directory: leadpally-frontend
+        run: npm ci
+
+      - name: Add backend auth controller
+        run: |
+          mkdir -p leadpally-api/app/Http/Controllers/Api/V1/Auth
+          cat > leadpally-api/app/Http/Controllers/Api/V1/Auth/AuthController.php << 'EOF'
+          <?php
+
+          namespace App\Http\Controllers\Api\V1\Auth;
+
+          use App\Http\Controllers\Controller;
+          use App\Models\User;
+          use Illuminate\Http\JsonResponse;
+          use Illuminate\Http\Request;
+          use Illuminate\Support\Facades\Hash;
+          use Illuminate\Validation\Rules\Password;
+          use Illuminate\Validation\ValidationException;
+
+          class AuthController extends Controller
+          {
+              public function register(Request $request): JsonResponse
+              {
+                  $validated = $request->validate([
+                      'name' => ['required', 'string', 'max:255'],
+                      'email' => ['required', 'string', 'email', 'max:255', 'unique:users,email'],
+                      'password' => ['required', 'confirmed', Password::min(8)],
+                  ]);
+
+                  $user = User::create([
+                      'name' => $validated['name'],
+                      'email' => $validated['email'],
+                      'password' => Hash::make($validated['password']),
+                  ]);
+
+                  $token = $user->createToken('leadpally-web')->plainTextToken;
+
+                  return response()->json([
+                      'message' => 'Registration successful.',
+                      'token' => $token,
+                      'user' => $this->userPayload($user),
+                  ], 201);
+              }
+
+              public function login(Request $request): JsonResponse
+              {
+                  $validated = $request->validate([
+                      'email' => ['required', 'email'],
+                      'password' => ['required', 'string'],
+                  ]);
+
+                  $user = User::where('email', $validated['email'])->first();
+
+                  if (! $user || ! Hash::check($validated['password'], $user->password)) {
+                      throw ValidationException::withMessages([
+                          'email' => ['The provided credentials are incorrect.'],
+                      ]);
+                  }
+
+                  $token = $user->createToken('leadpally-web')->plainTextToken;
+
+                  return response()->json([
+                      'message' => 'Login successful.',
+                      'token' => $token,
+                      'user' => $this->userPayload($user),
+                  ]);
+              }
+
+              public function me(Request $request): JsonResponse
+              {
+                  return response()->json([
+                      'user' => $this->userPayload($request->user()),
+                  ]);
+              }
+
+              public function logout(Request $request): JsonResponse
+              {
+                  $request->user()?->currentAccessToken()?->delete();
+
+                  return response()->json([
+                      'message' => 'Logout successful.',
+                  ]);
+              }
+
+              private function userPayload(User $user): array
+              {
+                  return [
+                      'id' => $user->id,
+                      'name' => $user->name,
+                      'email' => $user->email,
+                      'created_at' => $user->created_at?->toIso8601String(),
+                  ];
+              }
+          }
+          EOF
+
+      - name: Update API routes
+        run: |
+          cat > leadpally-api/routes/api.php << 'EOF'
+          <?php
+
+          use App\Http\Controllers\Api\V1\Auth\AuthController;
+          use Illuminate\Support\Facades\Route;
+
+          Route::get('/health', fn () => response()->json([
+              'status' => 'healthy',
+              'timestamp' => now()->toIso8601String(),
+          ]));
+
+          Route::prefix('v1')->group(function () {
+              Route::post('/auth/register', [AuthController::class, 'register']);
+              Route::post('/auth/login', [AuthController::class, 'login']);
+
+              Route::middleware('auth:sanctum')->group(function () {
+                  Route::get('/auth/me', [AuthController::class, 'me']);
+                  Route::post('/auth/logout', [AuthController::class, 'logout']);
+              });
+          });
+          EOF
+
+      - name: Add backend auth tests
+        run: |
+          mkdir -p leadpally-api/tests/Feature/Auth
+          cat > leadpally-api/tests/Feature/Auth/AuthTest.php << 'EOF'
+          <?php
+
+          namespace Tests\Feature\Auth;
+
+          use App\Models\User;
+          use Illuminate\Foundation\Testing\RefreshDatabase;
+          use Illuminate\Support\Facades\Hash;
+          use Tests\TestCase;
+
+          class AuthTest extends TestCase
+          {
+              use RefreshDatabase;
+
+              public function test_user_can_register(): void
+              {
+                  $response = $this->postJson('/api/v1/auth/register', [
+                      'name' => 'Oyebola Festus',
+                      'email' => 'oyebola@example.com',
+                      'password' => 'password123',
+                      'password_confirmation' => 'password123',
+                  ]);
+
+                  $response->assertCreated()
+                      ->assertJsonStructure(['message', 'token', 'user' => ['id', 'name', 'email']]);
+
+                  $this->assertDatabaseHas('users', ['email' => 'oyebola@example.com']);
+              }
+
+              public function test_user_can_login(): void
+              {
+                  User::factory()->create([
+                      'email' => 'user@example.com',
+                      'password' => Hash::make('password123'),
+                  ]);
+
+                  $response = $this->postJson('/api/v1/auth/login', [
+                      'email' => 'user@example.com',
+                      'password' => 'password123',
+                  ]);
+
+                  $response->assertOk()
+                      ->assertJsonStructure(['message', 'token', 'user' => ['id', 'name', 'email']]);
+              }
+
+              public function test_login_fails_with_wrong_password(): void
+              {
+                  User::factory()->create([
+                      'email' => 'user@example.com',
+                      'password' => Hash::make('password123'),
+                  ]);
+
+                  $response = $this->postJson('/api/v1/auth/login', [
+                      'email' => 'user@example.com',
+                      'password' => 'wrong-password',
+                  ]);
+
+                  $response->assertUnprocessable();
+              }
+
+              public function test_authenticated_user_can_fetch_profile(): void
+              {
+                  $user = User::factory()->create();
+
+                  $response = $this->actingAs($user, 'sanctum')->getJson('/api/v1/auth/me');
+
+                  $response->assertOk()
+                      ->assertJsonPath('user.email', $user->email);
+              }
+
+              public function test_authenticated_user_can_logout(): void
+              {
+                  $user = User::factory()->create();
+                  $token = $user->createToken('test-token');
+
+                  $response = $this->withHeader('Authorization', 'Bearer '.$token->plainTextToken)
+                      ->postJson('/api/v1/auth/logout');
+
+                  $response->assertOk()
+                      ->assertJsonPath('message', 'Logout successful.');
+              }
+          }
+          EOF
+
+      - name: Add frontend API client and auth pages
+        run: |
+          mkdir -p leadpally-frontend/src/lib
+          cat > leadpally-frontend/src/lib/api.ts << 'EOF'
+          import axios from 'axios';
+
+          const api = axios.create({
+            baseURL: process.env.NEXT_PUBLIC_API_URL ?? 'http://localhost:8000/api',
+            headers: {
+              Accept: 'application/json',
+              'Content-Type': 'application/json',
+            },
+          });
+
+          api.interceptors.request.use((config) => {
+            if (typeof window !== 'undefined') {
+              const token = window.localStorage.getItem('leadpally_token');
+              if (token) {
+                config.headers.Authorization = `Bearer ${token}`;
+              }
+            }
+            return config;
+          });
+
+          export default api;
+          EOF
+
+          mkdir -p leadpally-frontend/src/app/login
+          cat > leadpally-frontend/src/app/login/page.tsx << 'EOF'
+          'use client';
+
+          import { FormEvent, useState } from 'react';
+          import { useRouter } from 'next/navigation';
+          import api from '@/lib/api';
+
+          export default function LoginPage() {
+            const router = useRouter();
+            const [email, setEmail] = useState('');
+            const [password, setPassword] = useState('');
+            const [error, setError] = useState('');
+            const [loading, setLoading] = useState(false);
+
+            async function handleSubmit(event: FormEvent<HTMLFormElement>) {
+              event.preventDefault();
+              setLoading(true);
+              setError('');
+
+              try {
+                const response = await api.post('/v1/auth/login', { email, password });
+                window.localStorage.setItem('leadpally_token', response.data.token);
+                router.push('/dashboard');
+              } catch {
+                setError('Invalid login details. Please try again.');
+              } finally {
+                setLoading(false);
+              }
+            }
+
+            return (
+              <main className="flex min-h-screen items-center justify-center bg-slate-50 px-4">
+                <form onSubmit={handleSubmit} className="w-full max-w-md rounded-2xl bg-white p-8 shadow-sm">
+                  <h1 className="text-2xl font-bold text-slate-900">Login to LeadPally</h1>
+                  <p className="mt-2 text-sm text-slate-500">Continue to your dashboard.</p>
+
+                  {error && <p className="mt-4 rounded-lg bg-red-50 p-3 text-sm text-red-600">{error}</p>}
+
+                  <label className="mt-6 block text-sm font-medium text-slate-700">Email</label>
+                  <input className="mt-2 w-full rounded-lg border p-3" type="email" value={email} onChange={(e) => setEmail(e.target.value)} required />
+
+                  <label className="mt-4 block text-sm font-medium text-slate-700">Password</label>
+                  <input className="mt-2 w-full rounded-lg border p-3" type="password" value={password} onChange={(e) => setPassword(e.target.value)} required />
+
+                  <button className="mt-6 w-full rounded-lg bg-slate-900 p-3 font-semibold text-white disabled:opacity-50" disabled={loading}>
+                    {loading ? 'Logging in...' : 'Login'}
+                  </button>
+                </form>
+              </main>
+            );
+          }
+          EOF
+
+          mkdir -p leadpally-frontend/src/app/register
+          cat > leadpally-frontend/src/app/register/page.tsx << 'EOF'
+          'use client';
+
+          import { FormEvent, useState } from 'react';
+          import { useRouter } from 'next/navigation';
+          import api from '@/lib/api';
+
+          export default function RegisterPage() {
+            const router = useRouter();
+            const [name, setName] = useState('');
+            const [email, setEmail] = useState('');
+            const [password, setPassword] = useState('');
+            const [error, setError] = useState('');
+            const [loading, setLoading] = useState(false);
+
+            async function handleSubmit(event: FormEvent<HTMLFormElement>) {
+              event.preventDefault();
+              setLoading(true);
+              setError('');
+
+              try {
+                const response = await api.post('/v1/auth/register', {
+                  name,
+                  email,
+                  password,
+                  password_confirmation: password,
+                });
+                window.localStorage.setItem('leadpally_token', response.data.token);
+                router.push('/dashboard');
+              } catch {
+                setError('Registration failed. Please check your details.');
+              } finally {
+                setLoading(false);
+              }
+            }
+
+            return (
+              <main className="flex min-h-screen items-center justify-center bg-slate-50 px-4">
+                <form onSubmit={handleSubmit} className="w-full max-w-md rounded-2xl bg-white p-8 shadow-sm">
+                  <h1 className="text-2xl font-bold text-slate-900">Create your LeadPally account</h1>
+                  <p className="mt-2 text-sm text-slate-500">Start discovering leads across Africa.</p>
+
+                  {error && <p className="mt-4 rounded-lg bg-red-50 p-3 text-sm text-red-600">{error}</p>}
+
+                  <label className="mt-6 block text-sm font-medium text-slate-700">Name</label>
+                  <input className="mt-2 w-full rounded-lg border p-3" value={name} onChange={(e) => setName(e.target.value)} required />
+
+                  <label className="mt-4 block text-sm font-medium text-slate-700">Email</label>
+                  <input className="mt-2 w-full rounded-lg border p-3" type="email" value={email} onChange={(e) => setEmail(e.target.value)} required />
+
+                  <label className="mt-4 block text-sm font-medium text-slate-700">Password</label>
+                  <input className="mt-2 w-full rounded-lg border p-3" type="password" value={password} onChange={(e) => setPassword(e.target.value)} required />
+
+                  <button className="mt-6 w-full rounded-lg bg-slate-900 p-3 font-semibold text-white disabled:opacity-50" disabled={loading}>
+                    {loading ? 'Creating account...' : 'Create account'}
+                  </button>
+                </form>
+              </main>
+            );
+          }
+          EOF
+
+          mkdir -p leadpally-frontend/src/app/dashboard
+          cat > leadpally-frontend/src/app/dashboard/page.tsx << 'EOF'
+          export default function DashboardPage() {
+            return (
+              <main className="min-h-screen bg-slate-50 p-8">
+                <div className="mx-auto max-w-5xl">
+                  <h1 className="text-3xl font-bold text-slate-900">LeadPally Dashboard</h1>
+                  <p className="mt-2 text-slate-500">Your authentication foundation is ready.</p>
+
+                  <div className="mt-8 grid gap-4 md:grid-cols-3">
+                    <div className="rounded-2xl bg-white p-6 shadow-sm">
+                      <p className="text-sm text-slate-500">Status</p>
+                      <p className="mt-2 text-xl font-semibold text-green-600">Auth Ready</p>
+                    </div>
+                    <div className="rounded-2xl bg-white p-6 shadow-sm">
+                      <p className="text-sm text-slate-500">Next</p>
+                      <p className="mt-2 text-xl font-semibold text-slate-900">Teams</p>
+                    </div>
+                    <div className="rounded-2xl bg-white p-6 shadow-sm">
+                      <p className="text-sm text-slate-500">Sprint</p>
+                      <p className="mt-2 text-xl font-semibold text-slate-900">2</p>
+                    </div>
+                  </div>
+                </div>
+              </main>
+            );
+          }
+          EOF
+
+      - name: Verify backend auth module
+        working-directory: leadpally-api
+        env:
+          DB_CONNECTION: pgsql
+          DB_HOST: 127.0.0.1
+          DB_PORT: 5432
+          DB_DATABASE: leadpally_test
+          DB_USERNAME: postgres
+          DB_PASSWORD: postgres
+          CACHE_STORE: array
+          QUEUE_CONNECTION: sync
+          SESSION_DRIVER: file
+        run: |
+          cp .env.example .env
+          php artisan key:generate
+          php artisan migrate --seed
+          php artisan test
+
+      - name: Verify frontend auth module
+        working-directory: leadpally-frontend
+        run: |
+          npm run lint
+          npm run build
+
+      - name: Commit Sprint 2 auth module
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add .
+          git commit -m "Sprint 2: Add authentication module"
+          git push
