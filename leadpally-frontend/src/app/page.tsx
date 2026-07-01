@@ -26,10 +26,11 @@ export default function Home() {
             <a href="#pricing" className="hover:text-purple-800">Pricing</a>
             <a href="#reviews" className="hover:text-purple-800">Reviews</a>
             <a href="#faq" className="hover:text-purple-800">FAQ</a>
+            <a href="/dashboard" className="hover:text-purple-800">Dashboard</a>
           </nav>
           <div className="flex items-center gap-3">
-            <a href="#demo" className="hidden text-sm font-bold text-slate-700 hover:text-purple-800 sm:inline">Try Demo</a>
-            <a href="#pricing" className="rounded-full bg-purple-800 px-5 py-2.5 text-sm font-bold text-white shadow-lg shadow-purple-200 hover:bg-purple-900">Get Early Access</a>
+            <a href="/login" className="hidden text-sm font-bold text-slate-700 hover:text-purple-800 sm:inline">Login</a>
+            <a href="/register" className="rounded-full bg-purple-800 px-5 py-2.5 text-sm font-bold text-white shadow-lg shadow-purple-200 hover:bg-purple-900">Get Early Access</a>
           </div>
         </div>
       </header>
@@ -47,8 +48,8 @@ export default function Home() {
               LeadPally helps businesses find, manage, follow up, and close leads faster with a simple lead management and sales pipeline system.
             </p>
             <div className="mt-8 flex flex-col gap-4 sm:flex-row">
-              <a href="#pricing" className="rounded-full bg-purple-800 px-8 py-4 text-center text-base font-black text-white shadow-xl shadow-purple-200 hover:bg-purple-900">Start Free Trial</a>
-              <a href="#demo" className="rounded-full border-2 border-slate-300 bg-white px-8 py-4 text-center text-base font-black text-slate-800 hover:border-purple-800 hover:text-purple-800">Try Demo First</a>
+              <a href="/register" className="rounded-full bg-purple-800 px-8 py-4 text-center text-base font-black text-white shadow-xl shadow-purple-200 hover:bg-purple-900">Start Free Trial</a>
+              <a href="/login" className="rounded-full border-2 border-slate-300 bg-white px-8 py-4 text-center text-base font-black text-slate-800 hover:border-purple-800 hover:text-purple-800">Login / Try Demo</a>
             </div>
             <div className="mt-6 flex flex-wrap gap-3 text-sm font-semibold text-slate-500">
               <span>✓ No card needed</span><span>✓ Setup in minutes</span><span>✓ Built for growing teams</span>
@@ -111,7 +112,7 @@ export default function Home() {
               <p className="text-sm font-black text-purple-800">Lifetime beta access</p>
               <div className="mt-4 flex items-end gap-3"><span className="text-5xl font-black">₦59,000</span><span className="pb-2 text-slate-400 line-through">₦118,000</span></div>
               <p className="mt-2 text-sm font-semibold text-slate-500">One-time payment during beta</p>
-              <a href="#" className="mt-6 block rounded-full bg-purple-800 px-6 py-4 text-center font-black text-white hover:bg-purple-900">Get Early Access Now</a>
+              <a href="/register" className="mt-6 block rounded-full bg-purple-800 px-6 py-4 text-center font-black text-white hover:bg-purple-900">Get Early Access Now</a>
               <p className="mt-3 text-center text-xs font-semibold text-slate-500">Secure payment. Limited slots.</p>
             </div>
             <div className="rounded-3xl border border-white/10 bg-white/5 p-6"><h3 className="text-2xl font-black">Included</h3><ul className="mt-4 space-y-3 text-sm font-semibold text-slate-300">{['CRM dashboard','Lead management','Sales pipeline','Team collaboration','Reports','Workflow automation'].map((item) => <li key={item}>✓ {item}</li>)}</ul></div>
@@ -168,7 +169,7 @@ export default function Home() {
       </section>
 
       <section className="bg-gradient-to-r from-purple-900 to-slate-950 py-20 text-white">
-        <div className="mx-auto max-w-4xl px-5 text-center"><h2 className="text-4xl font-black md:text-6xl">Your next customer should not slip away.</h2><p className="mt-5 text-purple-100">Start organizing your leads and follow-ups with LeadPally.</p><div className="mt-8 flex flex-col justify-center gap-4 sm:flex-row"><a href="#pricing" className="rounded-full bg-white px-8 py-4 font-black text-purple-900">Get Early Access</a><a href="#demo" className="rounded-full border border-white/40 px-8 py-4 font-black text-white">Try Free First</a></div></div>
+        <div className="mx-auto max-w-4xl px-5 text-center"><h2 className="text-4xl font-black md:text-6xl">Your next customer should not slip away.</h2><p className="mt-5 text-purple-100">Start organizing your leads and follow-ups with LeadPally.</p><div className="mt-8 flex flex-col justify-center gap-4 sm:flex-row"><a href="/register" className="rounded-full bg-white px-8 py-4 font-black text-purple-900">Get Early Access</a><a href="/login" className="rounded-full border border-white/40 px-8 py-4 font-black text-white">Try Free First</a></div></div>
       </section>
 
       <section id="faq" className="bg-white py-20">
@@ -183,7 +184,7 @@ export default function Home() {
       <footer className="bg-slate-950 py-12 text-white">
         <div className="mx-auto grid max-w-7xl gap-8 px-5 md:grid-cols-4">
           <div className="md:col-span-2"><h3 className="text-2xl font-black">LeadPally</h3><p className="mt-3 max-w-sm text-sm leading-7 text-slate-400">Lead management and sales pipeline platform for growing businesses.</p></div>
-          <div><h4 className="font-black">Company</h4><ul className="mt-3 space-y-2 text-sm text-slate-400"><li>Features</li><li>Pricing</li><li>Contact</li></ul></div>
+          <div><h4 className="font-black">Company</h4><ul className="mt-3 space-y-2 text-sm text-slate-400"><li><a href="#features">Features</a></li><li><a href="#pricing">Pricing</a></li><li><a href="/login">Login</a></li><li><a href="/dashboard">Dashboard</a></li></ul></div>
           <div><h4 className="font-black">Legal</h4><ul className="mt-3 space-y-2 text-sm text-slate-400"><li>Privacy Policy</li><li>Terms</li></ul></div>
         </div>
         <p className="mx-auto mt-10 max-w-7xl px-5 text-sm text-slate-500">© {new Date().getFullYear()} LeadPally. All rights reserved.</p>
