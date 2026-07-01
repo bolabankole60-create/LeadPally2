@@ -28,7 +28,7 @@ jobs:
           cat > leadpally-frontend/src/app/crm/page.tsx << 'EOF'
           'use client';
 
-          import { FormEvent, useEffect, useMemo, useState } from 'react';
+          import { FormEvent, useMemo, useState } from 'react';
           import api from '@/lib/api';
 
           type Lead = {
@@ -45,13 +45,14 @@ jobs:
 
           export default function CrmPage() {
             const [leads, setLeads] = useState<Lead[]>([]);
-            const [loading, setLoading] = useState(true);
+            const [loading, setLoading] = useState(false);
             const [error, setError] = useState('');
             const [name, setName] = useState('');
             const [phone, setPhone] = useState('');
 
             async function loadLeads() {
               setLoading(true);
+              setError('');
               try {
                 const response = await api.get('/v1/leads');
                 setLeads(response.data.leads ?? []);
@@ -61,10 +62,6 @@ jobs:
                 setLoading(false);
               }
             }
-
-            useEffect(() => {
-              loadLeads();
-            }, []);
 
             async function createLead(event: FormEvent<HTMLFormElement>) {
               event.preventDefault();
@@ -97,6 +94,9 @@ jobs:
                       <h1 className="mt-2 text-3xl font-bold text-slate-900">Lead Pipeline</h1>
                       <p className="mt-2 text-slate-500">Manage saved business leads, track status, and follow up.</p>
                     </div>
+                    <button onClick={loadLeads} className="rounded-xl bg-slate-900 px-5 py-3 font-semibold text-white disabled:opacity-50" disabled={loading} type="button">
+                      {loading ? 'Loading...' : 'Load leads'}
+                    </button>
                   </div>
 
                   <div className="mt-6 grid gap-4 md:grid-cols-5">
