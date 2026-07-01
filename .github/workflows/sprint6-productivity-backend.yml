@@ -1,0 +1,189 @@
+name: Sprint 6 Productivity Backend
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  productivity:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_DB: leadpally_test
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: shivammathur/setup-php@v2
+        with:
+          php-version: '8.2'
+          extensions: pgsql
+
+      - name: Install dependencies
+        working-directory: leadpally-api
+        run: composer install --prefer-dist --no-progress --no-interaction
+
+      - name: Add productivity migration
+        run: |
+          cat > leadpally-api/database/migrations/2026_01_04_000001_create_activity_logs_table.php << 'EOF'
+          <?php
+          use Illuminate\Database\Migrations\Migration;
+          use Illuminate\Database\Schema\Blueprint;
+          use Illuminate\Support\Facades\Schema;
+
+          return new class extends Migration {
+              public function up(): void {
+                  Schema::create('activity_logs', function (Blueprint $table) {
+                      $table->id();
+                      $table->foreignId('team_id')->constrained()->cascadeOnDelete();
+                      $table->foreignId('user_id')->nullable()->constrained()->nullOnDelete();
+                      $table->foreignId('lead_id')->nullable()->constrained()->cascadeOnDelete();
+                      $table->string('action');
+                      $table->text('description')->nullable();
+                      $table->json('metadata')->nullable();
+                      $table->timestamps();
+                  });
+              }
+              public function down(): void {
+                  Schema::dropIfExists('activity_logs');
+              }
+          };
+          EOF
+
+      - name: Add activity model and controller
+        run: |
+          cat > leadpally-api/app/Models/ActivityLog.php << 'EOF'
+          <?php
+          namespace App\Models;
+          use Illuminate\Database\Eloquent\Model;
+          class ActivityLog extends Model {
+              protected $fillable=['team_id','user_id','lead_id','action','description','metadata'];
+              protected $casts=['metadata'=>'array'];
+          }
+          EOF
+
+          mkdir -p leadpally-api/app/Http/Controllers/Api/V1/Productivity
+          cat > leadpally-api/app/Http/Controllers/Api/V1/Productivity/ProductivityController.php << 'EOF'
+          <?php
+          namespace App\Http\Controllers\Api\V1\Productivity;
+          use App\Http\Controllers\Controller;
+          use App\Models\ActivityLog;
+          use App\Models\Lead;
+          use Illuminate\Http\JsonResponse;
+          use Illuminate\Http\Request;
+
+          class ProductivityController extends Controller {
+              public function bulkStatus(Request $request): JsonResponse {
+                  $data=$request->validate(['lead_ids'=>['required','array'],'status'=>['required','in:new,contacted,qualified,won,lost']]);
+                  $teamId=$request->user()->active_team_id; abort_unless($teamId,422);
+                  $count=Lead::where('team_id',$teamId)->whereIn('id',$data['lead_ids'])->update(['status'=>$data['status']]);
+                  $this->log($request,'bulk_status',"Updated {$count} leads to {$data['status']}",['lead_ids'=>$data['lead_ids']]);
+                  return response()->json(['message'=>'Leads updated.','count'=>$count]);
+              }
+              public function bulkFavorite(Request $request): JsonResponse {
+                  $data=$request->validate(['lead_ids'=>['required','array'],'is_favorite'=>['required','boolean']]);
+                  $teamId=$request->user()->active_team_id; abort_unless($teamId,422);
+                  $count=Lead::where('team_id',$teamId)->whereIn('id',$data['lead_ids'])->update(['is_favorite'=>$data['is_favorite']]);
+                  $this->log($request,'bulk_favorite',"Updated favorite flag for {$count} leads",['lead_ids'=>$data['lead_ids']]);
+                  return response()->json(['message'=>'Favorites updated.','count'=>$count]);
+              }
+              public function bulkDelete(Request $request): JsonResponse {
+                  $data=$request->validate(['lead_ids'=>['required','array']]);
+                  $teamId=$request->user()->active_team_id; abort_unless($teamId,422);
+                  $count=Lead::where('team_id',$teamId)->whereIn('id',$data['lead_ids'])->delete();
+                  $this->log($request,'bulk_delete',"Deleted {$count} leads",['lead_ids'=>$data['lead_ids']]);
+                  return response()->json(['message'=>'Leads deleted.','count'=>$count]);
+              }
+              public function reminders(Request $request): JsonResponse {
+                  $teamId=$request->user()->active_team_id; abort_unless($teamId,422);
+                  $leads=Lead::where('team_id',$teamId)->whereNotNull('follow_up_at')->orderBy('follow_up_at')->get();
+                  return response()->json(['reminders'=>$leads]);
+              }
+              public function duplicates(Request $request): JsonResponse {
+                  $teamId=$request->user()->active_team_id; abort_unless($teamId,422);
+                  $dupes=Lead::where('team_id',$teamId)->whereNotNull('phone')->selectRaw('phone, count(*) as total')->groupBy('phone')->havingRaw('count(*) > 1')->get();
+                  return response()->json(['duplicates'=>$dupes]);
+              }
+              public function activities(Request $request): JsonResponse {
+                  $teamId=$request->user()->active_team_id; abort_unless($teamId,422);
+                  return response()->json(['activities'=>ActivityLog::where('team_id',$teamId)->latest()->limit(50)->get()]);
+              }
+              private function log(Request $request,string $action,string $description,array $metadata=[]): void {
+                  ActivityLog::create(['team_id'=>$request->user()->active_team_id,'user_id'=>$request->user()->id,'action'=>$action,'description'=>$description,'metadata'=>$metadata]);
+              }
+          }
+          EOF
+
+      - name: Add productivity routes
+        run: |
+          python3 - << 'PY'
+          from pathlib import Path
+          p=Path('leadpally-api/routes/api.php')
+          s=p.read_text()
+          if 'ProductivityController' not in s:
+              s=s.replace('use App\\Http\\Controllers\\Api\\V1\\Crm\\LeadController;\n','use App\\Http\\Controllers\\Api\\V1\\Crm\\LeadController;\nuse App\\Http\\Controllers\\Api\\V1\\Productivity\\ProductivityController;\n')
+          if "Route::post('/leads/bulk/status'" not in s:
+              s=s.replace("Route::post('/leads/{lead}/tags', [LeadController::class, 'tag']);", "Route::post('/leads/{lead}/tags', [LeadController::class, 'tag']);\n                  Route::post('/leads/bulk/status', [ProductivityController::class, 'bulkStatus']);\n                  Route::post('/leads/bulk/favorite', [ProductivityController::class, 'bulkFavorite']);\n                  Route::post('/leads/bulk/delete', [ProductivityController::class, 'bulkDelete']);\n                  Route::get('/leads/reminders', [ProductivityController::class, 'reminders']);\n                  Route::get('/leads/duplicates', [ProductivityController::class, 'duplicates']);\n                  Route::get('/activity-logs', [ProductivityController::class, 'activities']);")
+          p.write_text(s)
+          PY
+
+      - name: Add productivity tests
+        run: |
+          mkdir -p leadpally-api/tests/Feature/Productivity
+          cat > leadpally-api/tests/Feature/Productivity/ProductivityTest.php << 'EOF'
+          <?php
+          namespace Tests\Feature\Productivity;
+          use App\Models\Lead;
+          use App\Models\Team;
+          use App\Models\User;
+          use Illuminate\Foundation\Testing\RefreshDatabase;
+          use Tests\TestCase;
+          class ProductivityTest extends TestCase {
+              use RefreshDatabase;
+              private function userWithTeam(): User { $user=User::factory()->create(); $team=Team::create(['owner_id'=>$user->id,'name'=>'HQ','slug'=>'hq-productivity']); $team->members()->attach($user->id,['role'=>'owner']); $user->forceFill(['active_team_id'=>$team->id])->save(); return $user; }
+              public function test_bulk_status_update(): void { $user=$this->userWithTeam(); $lead=Lead::create(['team_id'=>$user->active_team_id,'user_id'=>$user->id,'name'=>'Lead A']); $this->actingAs($user,'sanctum')->postJson('/api/v1/leads/bulk/status',['lead_ids'=>[$lead->id],'status'=>'qualified'])->assertOk()->assertJsonPath('count',1); $this->assertDatabaseHas('leads',['id'=>$lead->id,'status'=>'qualified']); $this->assertDatabaseHas('activity_logs',['team_id'=>$user->active_team_id,'action'=>'bulk_status']); }
+              public function test_bulk_favorite_update(): void { $user=$this->userWithTeam(); $lead=Lead::create(['team_id'=>$user->active_team_id,'user_id'=>$user->id,'name'=>'Lead A']); $this->actingAs($user,'sanctum')->postJson('/api/v1/leads/bulk/favorite',['lead_ids'=>[$lead->id],'is_favorite'=>true])->assertOk(); $this->assertDatabaseHas('leads',['id'=>$lead->id,'is_favorite'=>true]); }
+              public function test_duplicates_endpoint(): void { $user=$this->userWithTeam(); Lead::create(['team_id'=>$user->active_team_id,'user_id'=>$user->id,'name'=>'A','phone'=>'123']); Lead::create(['team_id'=>$user->active_team_id,'user_id'=>$user->id,'name'=>'B','phone'=>'123']); $this->actingAs($user,'sanctum')->getJson('/api/v1/leads/duplicates')->assertOk()->assertJsonCount(1,'duplicates'); }
+          }
+          EOF
+
+      - name: Verify backend
+        working-directory: leadpally-api
+        env:
+          DB_CONNECTION: pgsql
+          DB_HOST: 127.0.0.1
+          DB_PORT: 5432
+          DB_DATABASE: leadpally_test
+          DB_USERNAME: postgres
+          DB_PASSWORD: postgres
+          CACHE_STORE: array
+          QUEUE_CONNECTION: sync
+          SESSION_DRIVER: file
+        run: |
+          cp .env.example .env
+          php artisan key:generate
+          composer dump-autoload
+          php artisan optimize:clear || true
+          php artisan migrate --seed
+          php artisan test
+
+      - name: Commit
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add .
+          git commit -m "Sprint 6A: Add lead productivity backend"
+          git push
