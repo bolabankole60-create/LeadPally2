@@ -1,5 +1,6 @@
 <?php
 
+use App\Http\Controllers\Api\V1\Ai\AiAssistantController;
 use App\Http\Controllers\Api\V1\Auth\AuthController;
 use App\Http\Controllers\Api\V1\Campaigns\CampaignController;
 use App\Http\Controllers\Api\V1\Crm\LeadController;
@@ -59,5 +60,11 @@ Route::prefix('v1')->group(function () {
         Route::post('/workflows', [WorkflowController::class, 'store']);
         Route::post('/workflows/trigger', [WorkflowController::class, 'trigger']);
         Route::get('/workflow-runs', [WorkflowController::class, 'runs']);
+
+        Route::get('/ai/tools', [AiAssistantController::class, 'tools']);
+        Route::get('/ai/conversations', [AiAssistantController::class, 'conversations']);
+        Route::post('/ai/conversations', [AiAssistantController::class, 'createConversation']);
+        Route::get('/ai/conversations/{conversation}', [AiAssistantController::class, 'show']);
+        Route::post('/ai/conversations/{conversation}/chat', [AiAssistantController::class, 'chat']);
     });
 });
