@@ -23,6 +23,7 @@ class User extends Authenticatable
         'name',
         'email',
         'password',
+        'active_team_id',
     ];
 
     /**
@@ -32,6 +33,7 @@ class User extends Authenticatable
      */
     protected $hidden = [
         'password',
+        'active_team_id',
         'remember_token',
     ];
 
@@ -47,4 +49,19 @@ class User extends Authenticatable
             'password' => 'hashed',
         ];
     }
+    public function teams()
+    {
+        return $this->belongsToMany(Team::class)->withPivot('role')->withTimestamps();
+    }
+
+    public function ownedTeams()
+    {
+        return $this->hasMany(Team::class, 'owner_id');
+    }
+
+    public function activeTeam()
+    {
+        return $this->belongsTo(Team::class, 'active_team_id');
+    }
+
 }

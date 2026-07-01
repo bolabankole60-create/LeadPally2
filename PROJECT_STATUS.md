@@ -6,8 +6,8 @@
 |--------|--------|
 | Sprint 1 - Foundation | ✅ Complete |
 | Sprint 2 - Authentication | ✅ Complete |
-| Sprint 3 - Teams & Organizations | 🚧 Next |
-| Sprint 4 - Lead Search | ⏳ Planned |
+| Sprint 3 - Teams & Organizations | ✅ Complete |
+| Sprint 4 - Lead Search | 🚧 Next |
 | Sprint 5 - CRM | ⏳ Planned |
 | Sprint 6 - Dashboard & Analytics | ⏳ Planned |
 | Sprint 7 - Exports & Outreach | ⏳ Planned |
@@ -31,7 +31,7 @@
 
 ## Current Sprint
 
-**Sprint 3 – Teams & Organizations**
+**Sprint 4 – Lead Search**
 
 Goals:
 - Team creation
