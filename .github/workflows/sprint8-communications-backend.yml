@@ -1,0 +1,226 @@
+name: Sprint 8 Communications Backend
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  communications:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_DB: leadpally_test
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: shivammathur/setup-php@v2
+        with:
+          php-version: '8.2'
+          extensions: pgsql
+
+      - name: Install dependencies
+        working-directory: leadpally-api
+        run: composer install --prefer-dist --no-progress --no-interaction
+
+      - name: Add communications migration
+        run: |
+          cat > leadpally-api/database/migrations/2026_01_06_000001_create_communications_tables.php << 'EOF'
+          <?php
+          use Illuminate\Database\Migrations\Migration;
+          use Illuminate\Database\Schema\Blueprint;
+          use Illuminate\Support\Facades\Schema;
+
+          return new class extends Migration {
+              public function up(): void {
+                  Schema::create('email_templates', function (Blueprint $table) {
+                      $table->id();
+                      $table->foreignId('team_id')->constrained()->cascadeOnDelete();
+                      $table->string('name');
+                      $table->string('subject');
+                      $table->text('body');
+                      $table->timestamps();
+                  });
+                  Schema::create('communications', function (Blueprint $table) {
+                      $table->id();
+                      $table->foreignId('team_id')->constrained()->cascadeOnDelete();
+                      $table->foreignId('user_id')->nullable()->constrained()->nullOnDelete();
+                      $table->foreignId('lead_id')->nullable()->constrained()->nullOnDelete();
+                      $table->string('channel')->default('email');
+                      $table->string('direction')->default('outbound');
+                      $table->string('to')->nullable();
+                      $table->string('from')->nullable();
+                      $table->string('subject')->nullable();
+                      $table->text('body')->nullable();
+                      $table->string('status')->default('draft');
+                      $table->timestamp('sent_at')->nullable();
+                      $table->timestamps();
+                  });
+                  Schema::create('notifications', function (Blueprint $table) {
+                      $table->id();
+                      $table->foreignId('team_id')->constrained()->cascadeOnDelete();
+                      $table->foreignId('user_id')->nullable()->constrained()->nullOnDelete();
+                      $table->string('type');
+                      $table->string('title');
+                      $table->text('body')->nullable();
+                      $table->timestamp('read_at')->nullable();
+                      $table->timestamps();
+                  });
+              }
+              public function down(): void {
+                  Schema::dropIfExists('notifications');
+                  Schema::dropIfExists('communications');
+                  Schema::dropIfExists('email_templates');
+              }
+          };
+          EOF
+
+      - name: Add communication models and controller
+        run: |
+          cat > leadpally-api/app/Models/EmailTemplate.php << 'EOF'
+          <?php
+          namespace App\Models;
+          use Illuminate\Database\Eloquent\Model;
+          class EmailTemplate extends Model { protected $fillable=['team_id','name','subject','body']; }
+          EOF
+          cat > leadpally-api/app/Models/Communication.php << 'EOF'
+          <?php
+          namespace App\Models;
+          use Illuminate\Database\Eloquent\Model;
+          class Communication extends Model {
+              protected $fillable=['team_id','user_id','lead_id','channel','direction','to','from','subject','body','status','sent_at'];
+              protected $casts=['sent_at'=>'datetime'];
+          }
+          EOF
+          cat > leadpally-api/app/Models/AppNotification.php << 'EOF'
+          <?php
+          namespace App\Models;
+          use Illuminate\Database\Eloquent\Model;
+          class AppNotification extends Model {
+              protected $table='notifications';
+              protected $fillable=['team_id','user_id','type','title','body','read_at'];
+              protected $casts=['read_at'=>'datetime'];
+          }
+          EOF
+
+          mkdir -p leadpally-api/app/Http/Controllers/Api/V1/Communications
+          cat > leadpally-api/app/Http/Controllers/Api/V1/Communications/CommunicationController.php << 'EOF'
+          <?php
+          namespace App\Http\Controllers\Api\V1\Communications;
+          use App\Http\Controllers\Controller;
+          use App\Models\AppNotification;
+          use App\Models\Communication;
+          use App\Models\EmailTemplate;
+          use App\Models\Lead;
+          use Illuminate\Http\JsonResponse;
+          use Illuminate\Http\Request;
+
+          class CommunicationController extends Controller {
+              public function templates(Request $request): JsonResponse {
+                  $teamId=$request->user()->active_team_id; abort_unless($teamId,422);
+                  return response()->json(['templates'=>EmailTemplate::where('team_id',$teamId)->latest()->get()]);
+              }
+              public function createTemplate(Request $request): JsonResponse {
+                  $teamId=$request->user()->active_team_id; abort_unless($teamId,422);
+                  $data=$request->validate(['name'=>['required','string','max:255'],'subject'=>['required','string','max:255'],'body'=>['required','string']]);
+                  $template=EmailTemplate::create($data+['team_id'=>$teamId]);
+                  return response()->json(['message'=>'Template created.','template'=>$template],201);
+              }
+              public function sendEmail(Request $request): JsonResponse {
+                  $teamId=$request->user()->active_team_id; abort_unless($teamId,422);
+                  $data=$request->validate(['lead_id'=>['nullable','integer'],'to'=>['required','email'],'subject'=>['required','string','max:255'],'body'=>['required','string']]);
+                  if (!empty($data['lead_id'])) { Lead::where('team_id',$teamId)->findOrFail($data['lead_id']); }
+                  $email=Communication::create($data+['team_id'=>$teamId,'user_id'=>$request->user()->id,'channel'=>'email','direction'=>'outbound','status'=>'sent','sent_at'=>now()]);
+                  AppNotification::create(['team_id'=>$teamId,'user_id'=>$request->user()->id,'type'=>'email_sent','title'=>'Email sent','body'=>'Email sent to '.$data['to']]);
+                  return response()->json(['message'=>'Email recorded as sent.','communication'=>$email],201);
+              }
+              public function timeline(Request $request, Lead $lead): JsonResponse {
+                  abort_unless($request->user()->active_team_id === $lead->team_id,403);
+                  return response()->json(['communications'=>Communication::where('team_id',$lead->team_id)->where('lead_id',$lead->id)->latest()->get()]);
+              }
+              public function notifications(Request $request): JsonResponse {
+                  $teamId=$request->user()->active_team_id; abort_unless($teamId,422);
+                  return response()->json(['notifications'=>AppNotification::where('team_id',$teamId)->latest()->limit(50)->get()]);
+              }
+          }
+          EOF
+
+      - name: Add communication routes
+        run: |
+          python3 - << 'PY'
+          from pathlib import Path
+          p=Path('leadpally-api/routes/api.php')
+          s=p.read_text()
+          if 'CommunicationController' not in s:
+              s=s.replace('use App\\Http\\Controllers\\Api\\V1\\Pipelines\\PipelineController;\n','use App\\Http\\Controllers\\Api\\V1\\Pipelines\\PipelineController;\nuse App\\Http\\Controllers\\Api\\V1\\Communications\\CommunicationController;\n')
+          block="""                  Route::get('/email-templates', [CommunicationController::class, 'templates']);
+                  Route::post('/email-templates', [CommunicationController::class, 'createTemplate']);
+                  Route::post('/emails/send', [CommunicationController::class, 'sendEmail']);
+                  Route::get('/leads/{lead}/communications', [CommunicationController::class, 'timeline']);
+                  Route::get('/notifications', [CommunicationController::class, 'notifications']);
+"""
+          if "Route::get('/email-templates'" not in s:
+              s=s.replace("                  Route::get('/pipeline-analytics', [PipelineController::class, 'analytics']);", "                  Route::get('/pipeline-analytics', [PipelineController::class, 'analytics']);\n"+block)
+          p.write_text(s)
+          PY
+
+      - name: Add communication tests
+        run: |
+          mkdir -p leadpally-api/tests/Feature/Communications
+          cat > leadpally-api/tests/Feature/Communications/CommunicationTest.php << 'EOF'
+          <?php
+          namespace Tests\Feature\Communications;
+          use App\Models\Lead;
+          use App\Models\Team;
+          use App\Models\User;
+          use Illuminate\Foundation\Testing\RefreshDatabase;
+          use Tests\TestCase;
+          class CommunicationTest extends TestCase {
+              use RefreshDatabase;
+              private function userWithTeam(): User { $user=User::factory()->create(); $team=Team::create(['owner_id'=>$user->id,'name'=>'HQ','slug'=>'hq-comm']); $team->members()->attach($user->id,['role'=>'owner']); $user->forceFill(['active_team_id'=>$team->id])->save(); return $user; }
+              public function test_user_can_create_email_template(): void { $user=$this->userWithTeam(); $this->actingAs($user,'sanctum')->postJson('/api/v1/email-templates',['name'=>'Intro','subject'=>'Hello','body'=>'Hi there'])->assertCreated()->assertJsonPath('template.name','Intro'); }
+              public function test_user_can_record_sent_email_for_lead(): void { $user=$this->userWithTeam(); $lead=Lead::create(['team_id'=>$user->active_team_id,'user_id'=>$user->id,'name'=>'Ada','email'=>'ada@example.com']); $this->actingAs($user,'sanctum')->postJson('/api/v1/emails/send',['lead_id'=>$lead->id,'to'=>'ada@example.com','subject'=>'Hello','body'=>'Hi Ada'])->assertCreated(); $this->assertDatabaseHas('communications',['team_id'=>$user->active_team_id,'lead_id'=>$lead->id,'status'=>'sent']); $this->assertDatabaseHas('notifications',['team_id'=>$user->active_team_id,'type'=>'email_sent']); }
+              public function test_lead_communication_timeline_is_team_scoped(): void { $user=$this->userWithTeam(); $lead=Lead::create(['team_id'=>$user->active_team_id,'user_id'=>$user->id,'name'=>'Ada']); $this->actingAs($user,'sanctum')->getJson('/api/v1/leads/'.$lead->id.'/communications')->assertOk()->assertJsonStructure(['communications']); }
+          }
+          EOF
+
+      - name: Verify backend
+        working-directory: leadpally-api
+        env:
+          DB_CONNECTION: pgsql
+          DB_HOST: 127.0.0.1
+          DB_PORT: 5432
+          DB_DATABASE: leadpally_test
+          DB_USERNAME: postgres
+          DB_PASSWORD: postgres
+          CACHE_STORE: array
+          QUEUE_CONNECTION: sync
+          SESSION_DRIVER: file
+        run: |
+          cp .env.example .env
+          php artisan key:generate
+          composer dump-autoload
+          php artisan optimize:clear || true
+          php artisan migrate --seed
+          php artisan test
+
+      - name: Commit
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add .
+          git commit -m "Sprint 8A: Add communications backend"
+          git push
