@@ -2,6 +2,7 @@
 
 use App\Http\Controllers\Api\V1\Auth\AuthController;
 use App\Http\Controllers\Api\V1\Teams\TeamController;
+use App\Http\Controllers\Api\V1\Search\SearchController;
 use Illuminate\Support\Facades\Route;
 
 Route::get('/health', fn () => response()->json(['status'=>'healthy','timestamp'=>now()->toIso8601String()]));
@@ -19,5 +20,7 @@ Route::prefix('v1')->group(function () {
         Route::post('/teams/{team}/invite', [TeamController::class, 'invite']);
         Route::post('/team-invitations/{token}/accept', [TeamController::class, 'accept']);
         Route::get('/teams/{team}/members', [TeamController::class, 'members']);
+                  Route::post('/search', [SearchController::class, 'search']);
+                  Route::get('/search/history', [SearchController::class, 'history']);
     });
 });
