@@ -1,0 +1,275 @@
+name: Sprint 3 Teams Module v2
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  teams:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_DB: leadpally_test
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: shivammathur/setup-php@v2
+        with:
+          php-version: '8.2'
+          extensions: pgsql
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: leadpally-frontend/package-lock.json
+
+      - name: Install dependencies
+        run: |
+          cd leadpally-api && composer install --prefer-dist --no-progress --no-interaction
+          cd ../leadpally-frontend && npm ci
+
+      - name: Patch User model
+        run: |
+          python3 - << 'PY'
+          from pathlib import Path
+          p=Path('leadpally-api/app/Models/User.php')
+          s=p.read_text()
+          if 'Laravel\\Sanctum\\HasApiTokens' not in s:
+              s=s.replace('use Illuminate\\Notifications\\Notifiable;\n','use Illuminate\\Notifications\\Notifiable;\nuse Laravel\\Sanctum\\HasApiTokens;\n')
+          if 'use HasApiTokens,' not in s and 'use HasApiTokens;' not in s:
+              s=s.replace('use HasFactory, Notifiable;','use HasApiTokens, HasFactory, Notifiable;')
+          if "'active_team_id'" not in s:
+              s=s.replace("'password',\n", "'password',\n        'active_team_id',\n")
+          rel='''\n    public function teams()\n    {\n        return $this->belongsToMany(Team::class)->withPivot('role')->withTimestamps();\n    }\n\n    public function ownedTeams()\n    {\n        return $this->hasMany(Team::class, 'owner_id');\n    }\n\n    public function activeTeam()\n    {\n        return $this->belongsTo(Team::class, 'active_team_id');\n    }\n'''
+          if 'function activeTeam()' not in s:
+              s=s.replace('\n}\n', rel+'\n}\n')
+          p.write_text(s)
+          PY
+
+      - name: Add backend teams files
+        run: |
+          cat > leadpally-api/database/migrations/2026_01_01_000001_create_teams_tables.php << 'EOF'
+          <?php
+          use Illuminate\Database\Migrations\Migration;
+          use Illuminate\Database\Schema\Blueprint;
+          use Illuminate\Support\Facades\Schema;
+
+          return new class extends Migration {
+              public function up(): void {
+                  Schema::create('teams', function (Blueprint $table) {
+                      $table->id();
+                      $table->foreignId('owner_id')->constrained('users')->cascadeOnDelete();
+                      $table->string('name');
+                      $table->string('slug')->unique();
+                      $table->timestamps();
+                  });
+                  Schema::create('team_user', function (Blueprint $table) {
+                      $table->id();
+                      $table->foreignId('team_id')->constrained()->cascadeOnDelete();
+                      $table->foreignId('user_id')->constrained()->cascadeOnDelete();
+                      $table->string('role')->default('member');
+                      $table->timestamps();
+                      $table->unique(['team_id','user_id']);
+                  });
+                  Schema::create('team_invitations', function (Blueprint $table) {
+                      $table->id();
+                      $table->foreignId('team_id')->constrained()->cascadeOnDelete();
+                      $table->foreignId('invited_by')->constrained('users')->cascadeOnDelete();
+                      $table->string('email');
+                      $table->string('role')->default('member');
+                      $table->string('token')->unique();
+                      $table->timestamp('accepted_at')->nullable();
+                      $table->timestamp('expires_at')->nullable();
+                      $table->timestamps();
+                  });
+                  Schema::table('users', function (Blueprint $table) {
+                      if (! Schema::hasColumn('users','active_team_id')) {
+                          $table->foreignId('active_team_id')->nullable()->after('remember_token')->constrained('teams')->nullOnDelete();
+                      }
+                  });
+              }
+              public function down(): void {
+                  Schema::table('users', function (Blueprint $table) {
+                      if (Schema::hasColumn('users','active_team_id')) $table->dropConstrainedForeignId('active_team_id');
+                  });
+                  Schema::dropIfExists('team_invitations');
+                  Schema::dropIfExists('team_user');
+                  Schema::dropIfExists('teams');
+              }
+          };
+          EOF
+
+          cat > leadpally-api/app/Models/Team.php << 'EOF'
+          <?php
+          namespace App\Models;
+          use Illuminate\Database\Eloquent\Factories\HasFactory;
+          use Illuminate\Database\Eloquent\Model;
+          class Team extends Model {
+              use HasFactory;
+              protected $fillable=['owner_id','name','slug'];
+              public function owner(){ return $this->belongsTo(User::class,'owner_id'); }
+              public function members(){ return $this->belongsToMany(User::class)->withPivot('role')->withTimestamps(); }
+              public function invitations(){ return $this->hasMany(TeamInvitation::class); }
+          }
+          EOF
+
+          cat > leadpally-api/app/Models/TeamInvitation.php << 'EOF'
+          <?php
+          namespace App\Models;
+          use Illuminate\Database\Eloquent\Model;
+          class TeamInvitation extends Model {
+              protected $fillable=['team_id','invited_by','email','role','token','accepted_at','expires_at'];
+              protected $casts=['accepted_at'=>'datetime','expires_at'=>'datetime'];
+              public function team(){ return $this->belongsTo(Team::class); }
+              public function inviter(){ return $this->belongsTo(User::class,'invited_by'); }
+          }
+          EOF
+
+          mkdir -p leadpally-api/app/Http/Controllers/Api/V1/Teams
+          cat > leadpally-api/app/Http/Controllers/Api/V1/Teams/TeamController.php << 'EOF'
+          <?php
+          namespace App\Http\Controllers\Api\V1\Teams;
+          use App\Http\Controllers\Controller;
+          use App\Models\Team;
+          use App\Models\TeamInvitation;
+          use App\Models\User;
+          use Illuminate\Http\JsonResponse;
+          use Illuminate\Http\Request;
+          use Illuminate\Support\Facades\DB;
+          use Illuminate\Support\Str;
+
+          class TeamController extends Controller {
+              public function index(Request $request): JsonResponse { return response()->json(['teams'=>$request->user()->teams()->get(),'active_team_id'=>$request->user()->active_team_id]); }
+              public function store(Request $request): JsonResponse {
+                  $data=$request->validate(['name'=>['required','string','max:255']]); $user=$request->user();
+                  $team=DB::transaction(function() use($data,$user){ $team=Team::create(['owner_id'=>$user->id,'name'=>$data['name'],'slug'=>Str::slug($data['name']).'-'.Str::lower(Str::random(6))]); $team->members()->attach($user->id,['role'=>'owner']); $user->forceFill(['active_team_id'=>$team->id])->save(); return $team; });
+                  return response()->json(['message'=>'Team created.','team'=>$team],201);
+              }
+              public function switch(Request $request, Team $team): JsonResponse { abort_unless($request->user()->teams()->where('teams.id',$team->id)->exists(),403); $request->user()->forceFill(['active_team_id'=>$team->id])->save(); return response()->json(['message'=>'Active team switched.','team'=>$team]); }
+              public function update(Request $request, Team $team): JsonResponse { $this->authorizeOwner($request->user(),$team); $data=$request->validate(['name'=>['required','string','max:255']]); $team->update(['name'=>$data['name']]); return response()->json(['message'=>'Team updated.','team'=>$team]); }
+              public function invite(Request $request, Team $team): JsonResponse { $this->authorizeOwner($request->user(),$team); $data=$request->validate(['email'=>['required','email'],'role'=>['required','in:admin,member']]); $inv=TeamInvitation::create(['team_id'=>$team->id,'invited_by'=>$request->user()->id,'email'=>$data['email'],'role'=>$data['role'],'token'=>Str::random(40),'expires_at'=>now()->addDays(7)]); return response()->json(['message'=>'Invitation created.','invitation'=>$inv],201); }
+              public function accept(Request $request, string $token): JsonResponse { $inv=TeamInvitation::where('token',$token)->whereNull('accepted_at')->firstOrFail(); abort_if($inv->expires_at && $inv->expires_at->isPast(),410); abort_unless(strtolower($request->user()->email)===strtolower($inv->email),403); $inv->team->members()->syncWithoutDetaching([$request->user()->id=>['role'=>$inv->role]]); $request->user()->forceFill(['active_team_id'=>$inv->team_id])->save(); $inv->update(['accepted_at'=>now()]); return response()->json(['message'=>'Invitation accepted.','team'=>$inv->team]); }
+              public function members(Request $request, Team $team): JsonResponse { abort_unless($request->user()->teams()->where('teams.id',$team->id)->exists(),403); return response()->json(['members'=>$team->members()->get()]); }
+              private function authorizeOwner(User $user, Team $team): void { abort_unless($team->members()->where('users.id',$user->id)->wherePivot('role','owner')->exists(),403); }
+          }
+          EOF
+
+      - name: Replace API routes cleanly
+        run: |
+          cat > leadpally-api/routes/api.php << 'EOF'
+          <?php
+
+          use App\Http\Controllers\Api\V1\Auth\AuthController;
+          use App\Http\Controllers\Api\V1\Teams\TeamController;
+          use Illuminate\Support\Facades\Route;
+
+          Route::get('/health', fn () => response()->json(['status'=>'healthy','timestamp'=>now()->toIso8601String()]));
+
+          Route::prefix('v1')->group(function () {
+              Route::post('/auth/register', [AuthController::class, 'register']);
+              Route::post('/auth/login', [AuthController::class, 'login']);
+              Route::middleware('auth:sanctum')->group(function () {
+                  Route::get('/auth/me', [AuthController::class, 'me']);
+                  Route::post('/auth/logout', [AuthController::class, 'logout']);
+                  Route::get('/teams', [TeamController::class, 'index']);
+                  Route::post('/teams', [TeamController::class, 'store']);
+                  Route::post('/teams/{team}/switch', [TeamController::class, 'switch']);
+                  Route::put('/teams/{team}', [TeamController::class, 'update']);
+                  Route::post('/teams/{team}/invite', [TeamController::class, 'invite']);
+                  Route::post('/team-invitations/{token}/accept', [TeamController::class, 'accept']);
+                  Route::get('/teams/{team}/members', [TeamController::class, 'members']);
+              });
+          });
+          EOF
+          cd leadpally-api && php artisan route:list
+
+      - name: Add team tests
+        run: |
+          mkdir -p leadpally-api/tests/Feature/Teams
+          cat > leadpally-api/tests/Feature/Teams/TeamTest.php << 'EOF'
+          <?php
+          namespace Tests\Feature\Teams;
+          use App\Models\Team;
+          use App\Models\TeamInvitation;
+          use App\Models\User;
+          use Illuminate\Foundation\Testing\RefreshDatabase;
+          use Tests\TestCase;
+          class TeamTest extends TestCase {
+              use RefreshDatabase;
+              public function test_user_can_create_team(): void { $user=User::factory()->create(); $res=$this->actingAs($user,'sanctum')->postJson('/api/v1/teams',['name'=>'LeadPally HQ']); $res->assertCreated()->assertJsonPath('team.name','LeadPally HQ'); $this->assertDatabaseHas('team_user',['user_id'=>$user->id,'role'=>'owner']); $this->assertNotNull($user->fresh()->active_team_id); }
+              public function test_user_can_switch_team(): void { $user=User::factory()->create(); $team=Team::create(['owner_id'=>$user->id,'name'=>'Team A','slug'=>'team-a']); $team->members()->attach($user->id,['role'=>'owner']); $res=$this->actingAs($user,'sanctum')->postJson("/api/v1/teams/{$team->id}/switch"); $res->assertOk(); $this->assertSame($team->id,$user->fresh()->active_team_id); }
+              public function test_owner_can_invite_member(): void { $owner=User::factory()->create(); $team=Team::create(['owner_id'=>$owner->id,'name'=>'Team A','slug'=>'team-a']); $team->members()->attach($owner->id,['role'=>'owner']); $res=$this->actingAs($owner,'sanctum')->postJson("/api/v1/teams/{$team->id}/invite",['email'=>'member@example.com','role'=>'member']); $res->assertCreated(); $this->assertDatabaseHas('team_invitations',['email'=>'member@example.com']); }
+              public function test_invited_user_can_accept_invitation(): void { $owner=User::factory()->create(); $member=User::factory()->create(['email'=>'member@example.com']); $team=Team::create(['owner_id'=>$owner->id,'name'=>'Team A','slug'=>'team-a']); $team->members()->attach($owner->id,['role'=>'owner']); $inv=TeamInvitation::create(['team_id'=>$team->id,'invited_by'=>$owner->id,'email'=>'member@example.com','role'=>'member','token'=>'abc123','expires_at'=>now()->addDay()]); $res=$this->actingAs($member,'sanctum')->postJson('/api/v1/team-invitations/abc123/accept'); $res->assertOk(); $this->assertDatabaseHas('team_user',['team_id'=>$team->id,'user_id'=>$member->id,'role'=>'member']); $this->assertNotNull($inv->fresh()->accepted_at); }
+          }
+          EOF
+
+      - name: Add frontend team pages
+        run: |
+          mkdir -p leadpally-frontend/src/app/teams/new leadpally-frontend/src/app/teams
+          cat > leadpally-frontend/src/app/teams/page.tsx << 'EOF'
+          export default function TeamsPage(){return <main className="min-h-screen bg-slate-50 p-8"><div className="mx-auto max-w-4xl"><h1 className="text-3xl font-bold text-slate-900">Teams</h1><p className="mt-2 text-slate-500">Create and manage your LeadPally workspaces.</p><a href="/teams/new" className="mt-6 inline-block rounded-lg bg-slate-900 px-4 py-3 font-semibold text-white">Create Team</a></div></main>}
+          EOF
+          cat > leadpally-frontend/src/app/teams/new/page.tsx << 'EOF'
+          'use client';
+          import {FormEvent,useState} from 'react'; import {useRouter} from 'next/navigation'; import api from '@/lib/api';
+          export default function NewTeamPage(){const router=useRouter();const[name,setName]=useState('');const[error,setError]=useState('');const[loading,setLoading]=useState(false);async function submit(e:FormEvent<HTMLFormElement>){e.preventDefault();setLoading(true);setError('');try{await api.post('/v1/teams',{name});router.push('/dashboard')}catch{setError('Could not create team. Please try again.')}finally{setLoading(false)}}return <main className="flex min-h-screen items-center justify-center bg-slate-50 px-4"><form onSubmit={submit} className="w-full max-w-md rounded-2xl bg-white p-8 shadow-sm"><h1 className="text-2xl font-bold text-slate-900">Create Team</h1><p className="mt-2 text-sm text-slate-500">Set up your company or workspace.</p>{error&&<p className="mt-4 rounded-lg bg-red-50 p-3 text-sm text-red-600">{error}</p>}<label className="mt-6 block text-sm font-medium text-slate-700">Team name</label><input className="mt-2 w-full rounded-lg border p-3" value={name} onChange={(e)=>setName(e.target.value)} required/><button className="mt-6 w-full rounded-lg bg-slate-900 p-3 font-semibold text-white disabled:opacity-50" disabled={loading}>{loading?'Creating...':'Create Team'}</button></form></main>}
+          EOF
+
+      - name: Verify
+        working-directory: leadpally-api
+        env:
+          DB_CONNECTION: pgsql
+          DB_HOST: 127.0.0.1
+          DB_PORT: 5432
+          DB_DATABASE: leadpally_test
+          DB_USERNAME: postgres
+          DB_PASSWORD: postgres
+          CACHE_STORE: array
+          QUEUE_CONNECTION: sync
+          SESSION_DRIVER: file
+        run: |
+          cp .env.example .env
+          php artisan key:generate
+          composer dump-autoload
+          php artisan optimize:clear || true
+          php artisan migrate --seed
+          php artisan test
+
+      - name: Verify frontend
+        working-directory: leadpally-frontend
+        run: |
+          npm run lint
+          npm run build
+
+      - name: Update project status
+        run: |
+          python3 - << 'PY'
+          from pathlib import Path
+          p=Path('PROJECT_STATUS.md')
+          if p.exists():
+              s=p.read_text().replace('| Sprint 3 - Teams & Organizations | 🚧 Next |','| Sprint 3 - Teams & Organizations | ✅ Complete |').replace('| Sprint 4 - Lead Search | ⏳ Planned |','| Sprint 4 - Lead Search | 🚧 Next |').replace('**Sprint 3 – Teams & Organizations**','**Sprint 4 – Lead Search**')
+              p.write_text(s)
+          PY
+
+      - name: Commit
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add .
+          git commit -m "Sprint 3: Add teams module"
+          git push
