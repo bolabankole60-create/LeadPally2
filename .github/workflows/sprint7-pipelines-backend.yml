@@ -1,0 +1,252 @@
+name: Sprint 7 Pipelines Backend
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  pipelines:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_DB: leadpally_test
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: shivammathur/setup-php@v2
+        with:
+          php-version: '8.2'
+          extensions: pgsql
+
+      - name: Install dependencies
+        working-directory: leadpally-api
+        run: composer install --prefer-dist --no-progress --no-interaction
+
+      - name: Add pipelines migration
+        run: |
+          cat > leadpally-api/database/migrations/2026_01_05_000001_create_pipeline_tables.php << 'EOF'
+          <?php
+          use Illuminate\Database\Migrations\Migration;
+          use Illuminate\Database\Schema\Blueprint;
+          use Illuminate\Support\Facades\Schema;
+
+          return new class extends Migration {
+              public function up(): void {
+                  Schema::create('pipelines', function (Blueprint $table) {
+                      $table->id();
+                      $table->foreignId('team_id')->constrained()->cascadeOnDelete();
+                      $table->string('name');
+                      $table->boolean('is_default')->default(false);
+                      $table->timestamps();
+                  });
+                  Schema::create('pipeline_stages', function (Blueprint $table) {
+                      $table->id();
+                      $table->foreignId('pipeline_id')->constrained()->cascadeOnDelete();
+                      $table->string('name');
+                      $table->unsignedInteger('position')->default(0);
+                      $table->decimal('win_probability', 5, 2)->default(0);
+                      $table->timestamps();
+                  });
+                  Schema::create('deals', function (Blueprint $table) {
+                      $table->id();
+                      $table->foreignId('team_id')->constrained()->cascadeOnDelete();
+                      $table->foreignId('lead_id')->nullable()->constrained()->nullOnDelete();
+                      $table->foreignId('pipeline_id')->constrained()->cascadeOnDelete();
+                      $table->foreignId('pipeline_stage_id')->constrained()->cascadeOnDelete();
+                      $table->string('title');
+                      $table->decimal('value', 14, 2)->default(0);
+                      $table->string('currency')->default('NGN');
+                      $table->string('status')->default('open');
+                      $table->timestamp('expected_close_at')->nullable();
+                      $table->timestamp('closed_at')->nullable();
+                      $table->timestamps();
+                  });
+              }
+              public function down(): void {
+                  Schema::dropIfExists('deals');
+                  Schema::dropIfExists('pipeline_stages');
+                  Schema::dropIfExists('pipelines');
+              }
+          };
+          EOF
+
+      - name: Add pipeline models and controller
+        run: |
+          cat > leadpally-api/app/Models/Pipeline.php << 'EOF'
+          <?php
+          namespace App\Models;
+          use Illuminate\Database\Eloquent\Model;
+          class Pipeline extends Model {
+              protected $fillable=['team_id','name','is_default'];
+              protected $casts=['is_default'=>'boolean'];
+              public function stages(){ return $this->hasMany(PipelineStage::class)->orderBy('position'); }
+              public function deals(){ return $this->hasMany(Deal::class); }
+          }
+          EOF
+          cat > leadpally-api/app/Models/PipelineStage.php << 'EOF'
+          <?php
+          namespace App\Models;
+          use Illuminate\Database\Eloquent\Model;
+          class PipelineStage extends Model {
+              protected $fillable=['pipeline_id','name','position','win_probability'];
+              protected $casts=['win_probability'=>'decimal:2'];
+              public function pipeline(){ return $this->belongsTo(Pipeline::class); }
+          }
+          EOF
+          cat > leadpally-api/app/Models/Deal.php << 'EOF'
+          <?php
+          namespace App\Models;
+          use Illuminate\Database\Eloquent\Model;
+          class Deal extends Model {
+              protected $fillable=['team_id','lead_id','pipeline_id','pipeline_stage_id','title','value','currency','status','expected_close_at','closed_at'];
+              protected $casts=['value'=>'decimal:2','expected_close_at'=>'datetime','closed_at'=>'datetime'];
+              public function pipeline(){ return $this->belongsTo(Pipeline::class); }
+              public function stage(){ return $this->belongsTo(PipelineStage::class,'pipeline_stage_id'); }
+              public function lead(){ return $this->belongsTo(Lead::class); }
+          }
+          EOF
+
+          mkdir -p leadpally-api/app/Http/Controllers/Api/V1/Pipelines
+          cat > leadpally-api/app/Http/Controllers/Api/V1/Pipelines/PipelineController.php << 'EOF'
+          <?php
+          namespace App\Http\Controllers\Api\V1\Pipelines;
+          use App\Http\Controllers\Controller;
+          use App\Models\Deal;
+          use App\Models\Pipeline;
+          use App\Models\PipelineStage;
+          use Illuminate\Http\JsonResponse;
+          use Illuminate\Http\Request;
+          use Illuminate\Support\Facades\DB;
+
+          class PipelineController extends Controller {
+              public function index(Request $request): JsonResponse {
+                  $teamId=$request->user()->active_team_id; abort_unless($teamId,422);
+                  return response()->json(['pipelines'=>Pipeline::with('stages')->where('team_id',$teamId)->get()]);
+              }
+              public function store(Request $request): JsonResponse {
+                  $teamId=$request->user()->active_team_id; abort_unless($teamId,422);
+                  $data=$request->validate(['name'=>['required','string','max:255']]);
+                  $pipeline=DB::transaction(function() use($teamId,$data){
+                      $pipeline=Pipeline::create(['team_id'=>$teamId,'name'=>$data['name'],'is_default'=>false]);
+                      foreach(['New','Qualified','Proposal','Won'] as $i=>$name){ PipelineStage::create(['pipeline_id'=>$pipeline->id,'name'=>$name,'position'=>$i+1,'win_probability'=>$i*25]); }
+                      return $pipeline->load('stages');
+                  });
+                  return response()->json(['message'=>'Pipeline created.','pipeline'=>$pipeline],201);
+              }
+              public function createDeal(Request $request): JsonResponse {
+                  $teamId=$request->user()->active_team_id; abort_unless($teamId,422);
+                  $data=$request->validate(['pipeline_id'=>['required','integer'],'pipeline_stage_id'=>['required','integer'],'lead_id'=>['nullable','integer'],'title'=>['required','string','max:255'],'value'=>['nullable','numeric','min:0']]);
+                  $pipeline=Pipeline::where('team_id',$teamId)->findOrFail($data['pipeline_id']);
+                  PipelineStage::where('pipeline_id',$pipeline->id)->findOrFail($data['pipeline_stage_id']);
+                  $deal=Deal::create(['team_id'=>$teamId,'currency'=>'NGN','status'=>'open','value'=>$data['value'] ?? 0]+$data);
+                  return response()->json(['message'=>'Deal created.','deal'=>$deal],201);
+              }
+              public function moveDeal(Request $request, Deal $deal): JsonResponse {
+                  abort_unless($request->user()->active_team_id === $deal->team_id,403);
+                  $data=$request->validate(['pipeline_stage_id'=>['required','integer']]);
+                  $stage=PipelineStage::where('pipeline_id',$deal->pipeline_id)->findOrFail($data['pipeline_stage_id']);
+                  $deal->update(['pipeline_stage_id'=>$stage->id]);
+                  return response()->json(['message'=>'Deal moved.','deal'=>$deal->fresh()]);
+              }
+              public function closeDeal(Request $request, Deal $deal): JsonResponse {
+                  abort_unless($request->user()->active_team_id === $deal->team_id,403);
+                  $data=$request->validate(['status'=>['required','in:won,lost']]);
+                  $deal->update(['status'=>$data['status'],'closed_at'=>now()]);
+                  return response()->json(['message'=>'Deal closed.','deal'=>$deal->fresh()]);
+              }
+              public function analytics(Request $request): JsonResponse {
+                  $teamId=$request->user()->active_team_id; abort_unless($teamId,422);
+                  return response()->json([
+                      'open_deals'=>Deal::where('team_id',$teamId)->where('status','open')->count(),
+                      'won_deals'=>Deal::where('team_id',$teamId)->where('status','won')->count(),
+                      'lost_deals'=>Deal::where('team_id',$teamId)->where('status','lost')->count(),
+                      'open_value'=>Deal::where('team_id',$teamId)->where('status','open')->sum('value'),
+                      'won_value'=>Deal::where('team_id',$teamId)->where('status','won')->sum('value'),
+                  ]);
+              }
+          }
+          EOF
+
+      - name: Add pipeline routes
+        run: |
+          python3 - << 'PY'
+          from pathlib import Path
+          p=Path('leadpally-api/routes/api.php')
+          s=p.read_text()
+          if 'PipelineController' not in s:
+              s=s.replace('use App\\Http\\Controllers\\Api\\V1\\Productivity\\ProductivityController;\n','use App\\Http\\Controllers\\Api\\V1\\Productivity\\ProductivityController;\nuse App\\Http\\Controllers\\Api\\V1\\Pipelines\\PipelineController;\n')
+          block="""                  Route::get('/pipelines', [PipelineController::class, 'index']);
+                  Route::post('/pipelines', [PipelineController::class, 'store']);
+                  Route::post('/deals', [PipelineController::class, 'createDeal']);
+                  Route::post('/deals/{deal}/move', [PipelineController::class, 'moveDeal']);
+                  Route::post('/deals/{deal}/close', [PipelineController::class, 'closeDeal']);
+                  Route::get('/pipeline-analytics', [PipelineController::class, 'analytics']);
+"""
+          if "Route::get('/pipelines'" not in s:
+              s=s.replace("                  Route::get('/activity-logs', [ProductivityController::class, 'activities']);", "                  Route::get('/activity-logs', [ProductivityController::class, 'activities']);\n"+block)
+          p.write_text(s)
+          PY
+
+      - name: Add pipeline tests
+        run: |
+          mkdir -p leadpally-api/tests/Feature/Pipelines
+          cat > leadpally-api/tests/Feature/Pipelines/PipelineTest.php << 'EOF'
+          <?php
+          namespace Tests\Feature\Pipelines;
+          use App\Models\Deal;
+          use App\Models\Pipeline;
+          use App\Models\PipelineStage;
+          use App\Models\Team;
+          use App\Models\User;
+          use Illuminate\Foundation\Testing\RefreshDatabase;
+          use Tests\TestCase;
+          class PipelineTest extends TestCase {
+              use RefreshDatabase;
+              private function userWithTeam(): User { $user=User::factory()->create(); $team=Team::create(['owner_id'=>$user->id,'name'=>'HQ','slug'=>'hq-pipeline']); $team->members()->attach($user->id,['role'=>'owner']); $user->forceFill(['active_team_id'=>$team->id])->save(); return $user; }
+              public function test_user_can_create_pipeline_with_stages(): void { $user=$this->userWithTeam(); $this->actingAs($user,'sanctum')->postJson('/api/v1/pipelines',['name'=>'Default Sales'])->assertCreated()->assertJsonCount(4,'pipeline.stages'); }
+              public function test_user_can_create_move_and_close_deal(): void { $user=$this->userWithTeam(); $pipeline=Pipeline::create(['team_id'=>$user->active_team_id,'name'=>'Sales']); $stage1=PipelineStage::create(['pipeline_id'=>$pipeline->id,'name'=>'New','position'=>1]); $stage2=PipelineStage::create(['pipeline_id'=>$pipeline->id,'name'=>'Won','position'=>2]); $res=$this->actingAs($user,'sanctum')->postJson('/api/v1/deals',['pipeline_id'=>$pipeline->id,'pipeline_stage_id'=>$stage1->id,'title'=>'Website deal','value'=>50000]); $res->assertCreated(); $dealId=$res->json('deal.id'); $this->actingAs($user,'sanctum')->postJson('/api/v1/deals/'.$dealId.'/move',['pipeline_stage_id'=>$stage2->id])->assertOk(); $this->actingAs($user,'sanctum')->postJson('/api/v1/deals/'.$dealId.'/close',['status'=>'won'])->assertOk(); $this->assertDatabaseHas('deals',['id'=>$dealId,'status'=>'won']); }
+              public function test_pipeline_analytics_returns_totals(): void { $user=$this->userWithTeam(); $pipeline=Pipeline::create(['team_id'=>$user->active_team_id,'name'=>'Sales']); $stage=PipelineStage::create(['pipeline_id'=>$pipeline->id,'name'=>'New','position'=>1]); Deal::create(['team_id'=>$user->active_team_id,'pipeline_id'=>$pipeline->id,'pipeline_stage_id'=>$stage->id,'title'=>'Deal','value'=>1000]); $this->actingAs($user,'sanctum')->getJson('/api/v1/pipeline-analytics')->assertOk()->assertJsonPath('open_deals',1); }
+          }
+          EOF
+
+      - name: Verify backend
+        working-directory: leadpally-api
+        env:
+          DB_CONNECTION: pgsql
+          DB_HOST: 127.0.0.1
+          DB_PORT: 5432
+          DB_DATABASE: leadpally_test
+          DB_USERNAME: postgres
+          DB_PASSWORD: postgres
+          CACHE_STORE: array
+          QUEUE_CONNECTION: sync
+          SESSION_DRIVER: file
+        run: |
+          cp .env.example .env
+          php artisan key:generate
+          composer dump-autoload
+          php artisan optimize:clear || true
+          php artisan migrate --seed
+          php artisan test
+
+      - name: Commit
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add .
+          git commit -m "Sprint 7A: Add pipelines and deals backend"
+          git push
