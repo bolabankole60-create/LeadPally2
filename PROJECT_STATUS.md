@@ -8,7 +8,7 @@
 | Sprint 2 - Authentication | ✅ Complete |
 | Sprint 3 - Teams & Organizations | ✅ Complete |
 | Sprint 4 - Lead Search | ✅ Complete |
-| Sprint 5 - CRM | 🚧 Next |
+| Sprint 5 - CRM | ✅ Complete |
 | Sprint 6 - Dashboard & Analytics | ⏳ Planned |
 | Sprint 7 - Exports & Outreach | ⏳ Planned |
 | Sprint 8 - Billing & Paystack | ⏳ Planned |

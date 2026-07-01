@@ -1,0 +1,123 @@
+'use client';
+
+import { FormEvent, useMemo, useState } from 'react';
+import api from '@/lib/api';
+
+type Lead = {
+  id: number;
+  name: string;
+  company?: string | null;
+  phone?: string | null;
+  email?: string | null;
+  status: 'new' | 'contacted' | 'qualified' | 'won' | 'lost';
+  is_favorite: boolean;
+};
+
+const statuses = ['new', 'contacted', 'qualified', 'won', 'lost'] as const;
+
+export default function CrmPage() {
+  const [leads, setLeads] = useState<Lead[]>([]);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState('');
+  const [name, setName] = useState('');
+  const [phone, setPhone] = useState('');
+
+  async function loadLeads() {
+    setLoading(true);
+    setError('');
+    try {
+      const response = await api.get('/v1/leads');
+      setLeads(response.data.leads ?? []);
+    } catch {
+      setError('Could not load leads. Make sure you are logged in and have an active team.');
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  async function createLead(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    setError('');
+    try {
+      await api.post('/v1/leads', { name, phone });
+      setName('');
+      setPhone('');
+      await loadLeads();
+    } catch {
+      setError('Could not save lead.');
+    }
+  }
+
+  async function updateLead(lead: Lead, status: Lead['status']) {
+    await api.put(`/v1/leads/${lead.id}`, { status });
+    await loadLeads();
+  }
+
+  const counts = useMemo(() => {
+    return statuses.reduce((acc, status) => ({ ...acc, [status]: leads.filter((lead) => lead.status === status).length }), {} as Record<Lead['status'], number>);
+  }, [leads]);
+
+  return (
+    <main className="min-h-screen bg-slate-50 p-6 md:p-8">
+      <div className="mx-auto max-w-7xl">
+        <div className="flex flex-col justify-between gap-4 md:flex-row md:items-center">
+          <div>
+            <p className="text-sm font-semibold uppercase tracking-wide text-slate-500">CRM</p>
+            <h1 className="mt-2 text-3xl font-bold text-slate-900">Lead Pipeline</h1>
+            <p className="mt-2 text-slate-500">Manage saved business leads, track status, and follow up.</p>
+          </div>
+          <button onClick={loadLeads} className="rounded-xl bg-slate-900 px-5 py-3 font-semibold text-white disabled:opacity-50" disabled={loading} type="button">
+            {loading ? 'Loading...' : 'Load leads'}
+          </button>
+        </div>
+
+        <div className="mt-6 grid gap-4 md:grid-cols-5">
+          {statuses.map((status) => (
+            <div key={status} className="rounded-2xl bg-white p-5 shadow-sm">
+              <p className="text-sm capitalize text-slate-500">{status}</p>
+              <p className="mt-2 text-3xl font-bold text-slate-900">{counts[status] ?? 0}</p>
+            </div>
+          ))}
+        </div>
+
+        <form onSubmit={createLead} className="mt-6 grid gap-4 rounded-2xl bg-white p-5 shadow-sm md:grid-cols-[1fr_220px_160px]">
+          <input className="rounded-xl border border-slate-200 p-3 outline-none focus:border-slate-900" placeholder="Lead name" value={name} onChange={(event) => setName(event.target.value)} required />
+          <input className="rounded-xl border border-slate-200 p-3 outline-none focus:border-slate-900" placeholder="Phone" value={phone} onChange={(event) => setPhone(event.target.value)} />
+          <button className="rounded-xl bg-slate-900 p-3 font-semibold text-white">Save Lead</button>
+        </form>
+
+        {error && <p className="mt-4 rounded-xl bg-red-50 p-4 text-sm text-red-600">{error}</p>}
+
+        {loading ? (
+          <div className="mt-8 grid gap-4 md:grid-cols-3">
+            {[1, 2, 3].map((item) => <div key={item} className="h-48 animate-pulse rounded-2xl bg-white shadow-sm" />)}
+          </div>
+        ) : (
+          <div className="mt-8 grid gap-4 lg:grid-cols-5">
+            {statuses.map((status) => (
+              <section key={status} className="rounded-2xl bg-white p-4 shadow-sm">
+                <h2 className="text-sm font-bold uppercase tracking-wide text-slate-500">{status}</h2>
+                <div className="mt-4 space-y-3">
+                  {leads.filter((lead) => lead.status === status).map((lead) => (
+                    <div key={lead.id} className="rounded-xl border border-slate-100 p-4">
+                      <div className="flex items-start justify-between gap-3">
+                        <div>
+                          <h3 className="font-semibold text-slate-900">{lead.name}</h3>
+                          {lead.phone && <p className="mt-1 text-sm text-slate-500">{lead.phone}</p>}
+                        </div>
+                        {lead.is_favorite && <span className="text-yellow-500">★</span>}
+                      </div>
+                      <select className="mt-4 w-full rounded-lg border p-2 text-sm" value={lead.status} onChange={(event) => updateLead(lead, event.target.value as Lead['status'])}>
+                        {statuses.map((item) => <option key={item} value={item}>{item}</option>)}
+                      </select>
+                    </div>
+                  ))}
+                </div>
+              </section>
+            ))}
+          </div>
+        )}
+      </div>
+    </main>
+  );
+}

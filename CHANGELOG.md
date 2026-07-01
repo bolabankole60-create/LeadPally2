@@ -15,6 +15,18 @@ The format is inspired by Keep a Changelog.
 
 ---
 
+## [Sprint 5B] - CRM Frontend
+
+### Added
+- CRM pipeline UI
+- Lead count cards
+- Save lead form
+- Status columns
+- Status update control
+- Loading and error states
+
+---
+
 ## [Sprint 4B] - Search Frontend
 
 ### Added
