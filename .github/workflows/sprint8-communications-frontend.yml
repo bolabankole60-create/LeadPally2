@@ -1,0 +1,191 @@
+name: Sprint 8 Communications Frontend
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  frontend:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: leadpally-frontend/package-lock.json
+
+      - name: Install dependencies
+        working-directory: leadpally-frontend
+        run: npm ci
+
+      - name: Add communications page
+        run: |
+          mkdir -p leadpally-frontend/src/app/communications
+          cat > leadpally-frontend/src/app/communications/page.tsx << 'EOF'
+          'use client';
+
+          import { FormEvent, useState } from 'react';
+          import api from '@/lib/api';
+
+          type Template = { id: number; name: string; subject: string; body: string };
+          type Notification = { id: number; title: string; body?: string | null; type: string };
+
+          export default function CommunicationsPage() {
+            const [templates, setTemplates] = useState<Template[]>([]);
+            const [notifications, setNotifications] = useState<Notification[]>([]);
+            const [templateName, setTemplateName] = useState('Intro Email');
+            const [subject, setSubject] = useState('Quick introduction');
+            const [body, setBody] = useState('Hello, I would like to introduce LeadPally.');
+            const [to, setTo] = useState('customer@example.com');
+            const [emailSubject, setEmailSubject] = useState('Hello from LeadPally');
+            const [emailBody, setEmailBody] = useState('Hi, I wanted to follow up with you.');
+            const [error, setError] = useState('');
+            const [success, setSuccess] = useState('');
+            const [loading, setLoading] = useState(false);
+
+            async function loadData() {
+              setLoading(true);
+              setError('');
+              try {
+                const [templateResponse, notificationResponse] = await Promise.all([
+                  api.get('/v1/email-templates'),
+                  api.get('/v1/notifications'),
+                ]);
+                setTemplates(templateResponse.data.templates ?? []);
+                setNotifications(notificationResponse.data.notifications ?? []);
+              } catch {
+                setError('Could not load communications. Make sure you are logged in and have an active team.');
+              } finally {
+                setLoading(false);
+              }
+            }
+
+            async function createTemplate(event: FormEvent<HTMLFormElement>) {
+              event.preventDefault();
+              setError('');
+              setSuccess('');
+              try {
+                const response = await api.post('/v1/email-templates', { name: templateName, subject, body });
+                setTemplates((current) => [response.data.template, ...current]);
+                setSuccess('Template created.');
+              } catch {
+                setError('Could not create template.');
+              }
+            }
+
+            async function sendEmail(event: FormEvent<HTMLFormElement>) {
+              event.preventDefault();
+              setError('');
+              setSuccess('');
+              try {
+                await api.post('/v1/emails/send', { to, subject: emailSubject, body: emailBody });
+                setSuccess('Email recorded as sent.');
+                await loadData();
+              } catch {
+                setError('Could not send email.');
+              }
+            }
+
+            return (
+              <main className="min-h-screen bg-slate-50 p-6 md:p-8">
+                <div className="mx-auto max-w-6xl">
+                  <div className="flex flex-col justify-between gap-4 md:flex-row md:items-center">
+                    <div>
+                      <p className="text-sm font-semibold uppercase tracking-wide text-slate-500">Communications</p>
+                      <h1 className="mt-2 text-3xl font-bold text-slate-900">Email & Notifications</h1>
+                      <p className="mt-2 text-slate-500">Create templates, record outbound emails, and view notifications.</p>
+                    </div>
+                    <button onClick={loadData} className="rounded-xl bg-slate-900 px-5 py-3 font-semibold text-white disabled:opacity-50" disabled={loading} type="button">
+                      {loading ? 'Loading...' : 'Load communications'}
+                    </button>
+                  </div>
+
+                  {error && <p className="mt-4 rounded-xl bg-red-50 p-4 text-sm text-red-600">{error}</p>}
+                  {success && <p className="mt-4 rounded-xl bg-green-50 p-4 text-sm text-green-700">{success}</p>}
+
+                  <div className="mt-6 grid gap-4 lg:grid-cols-2">
+                    <form onSubmit={createTemplate} className="rounded-2xl bg-white p-5 shadow-sm">
+                      <h2 className="text-lg font-bold text-slate-900">Create email template</h2>
+                      <input className="mt-4 w-full rounded-xl border p-3" value={templateName} onChange={(event) => setTemplateName(event.target.value)} required />
+                      <input className="mt-3 w-full rounded-xl border p-3" value={subject} onChange={(event) => setSubject(event.target.value)} required />
+                      <textarea className="mt-3 h-32 w-full rounded-xl border p-3" value={body} onChange={(event) => setBody(event.target.value)} required />
+                      <button className="mt-4 rounded-xl bg-slate-900 px-5 py-3 font-semibold text-white">Save Template</button>
+                    </form>
+
+                    <form onSubmit={sendEmail} className="rounded-2xl bg-white p-5 shadow-sm">
+                      <h2 className="text-lg font-bold text-slate-900">Send email</h2>
+                      <input className="mt-4 w-full rounded-xl border p-3" type="email" value={to} onChange={(event) => setTo(event.target.value)} required />
+                      <input className="mt-3 w-full rounded-xl border p-3" value={emailSubject} onChange={(event) => setEmailSubject(event.target.value)} required />
+                      <textarea className="mt-3 h-32 w-full rounded-xl border p-3" value={emailBody} onChange={(event) => setEmailBody(event.target.value)} required />
+                      <button className="mt-4 rounded-xl bg-slate-900 px-5 py-3 font-semibold text-white">Record Sent Email</button>
+                    </form>
+                  </div>
+
+                  <div className="mt-8 grid gap-4 lg:grid-cols-2">
+                    <section className="rounded-2xl bg-white p-5 shadow-sm">
+                      <h2 className="text-lg font-bold text-slate-900">Templates</h2>
+                      <div className="mt-4 space-y-3">
+                        {templates.map((template) => (
+                          <div key={template.id} className="rounded-xl border border-slate-100 p-4">
+                            <h3 className="font-semibold text-slate-900">{template.name}</h3>
+                            <p className="mt-1 text-sm text-slate-500">{template.subject}</p>
+                          </div>
+                        ))}
+                        {templates.length === 0 && <p className="text-sm text-slate-500">No templates loaded yet.</p>}
+                      </div>
+                    </section>
+
+                    <section className="rounded-2xl bg-white p-5 shadow-sm">
+                      <h2 className="text-lg font-bold text-slate-900">Notifications</h2>
+                      <div className="mt-4 space-y-3">
+                        {notifications.map((notification) => (
+                          <div key={notification.id} className="rounded-xl border border-slate-100 p-4">
+                            <h3 className="font-semibold text-slate-900">{notification.title}</h3>
+                            <p className="mt-1 text-sm text-slate-500">{notification.body}</p>
+                          </div>
+                        ))}
+                        {notifications.length === 0 && <p className="text-sm text-slate-500">No notifications loaded yet.</p>}
+                      </div>
+                    </section>
+                  </div>
+                </div>
+              </main>
+            );
+          }
+          EOF
+
+      - name: Verify frontend
+        working-directory: leadpally-frontend
+        run: |
+          npm run lint
+          npm run build
+
+      - name: Update docs
+        run: |
+          python3 - << 'PY'
+          from pathlib import Path
+          ps = Path('PROJECT_STATUS.md')
+          if ps.exists():
+              s = ps.read_text()
+              if '| Sprint 8 - Communications |' not in s:
+                  s += '\n| Sprint 8 - Communications | ✅ Complete |\n'
+              ps.write_text(s)
+          ch = Path('CHANGELOG.md')
+          if ch.exists():
+              s = ch.read_text()
+              if '## [Sprint 8B] - Communications Frontend' not in s:
+                  s = s.replace('## [Sprint 7B] - Pipelines Frontend', '## [Sprint 8B] - Communications Frontend\n\n### Added\n- Communications dashboard\n- Email template form\n- Send email form\n- Notifications panel\n- Loading and error states\n\n---\n\n## [Sprint 7B] - Pipelines Frontend')
+              ch.write_text(s)
+          PY
+
+      - name: Commit
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add .
+          git commit -m "Sprint 8B: Add communications frontend"
+          git push
