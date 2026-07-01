@@ -1,6 +1,0 @@
-{
-  "framework": "nextjs",
-  "installCommand": "cd leadpally-frontend && npm ci",
-  "buildCommand": "cd leadpally-frontend && npm run build",
-  "outputDirectory": "leadpally-frontend/.next"
-}
