@@ -1,0 +1,343 @@
+name: Bootstrap Sprint 1
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  bootstrap:
+    name: Scaffold LeadPally foundation
+    runs-on: ubuntu-latest
+
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_DB: leadpally_test
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+      redis:
+        image: redis:7-alpine
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Stop if foundation already exists
+        run: |
+          if [ -d "leadpally-api" ] || [ -d "leadpally-frontend" ]; then
+            echo "Foundation folders already exist. Refusing to overwrite."
+            exit 1
+          fi
+
+      - name: Setup PHP
+        uses: shivammathur/setup-php@v2
+        with:
+          php-version: '8.2'
+          extensions: pgsql, redis
+          tools: composer:v2
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Scaffold Laravel 12 backend
+        run: |
+          composer create-project laravel/laravel:^12.0 leadpally-api --prefer-dist --no-interaction
+          cd leadpally-api
+          composer require laravel/sanctum --no-interaction
+          php artisan install:api --no-interaction || true
+
+      - name: Configure backend environment examples and health route
+        run: |
+          cat > leadpally-api/.env.example << 'EOF'
+          APP_NAME=LeadPally
+          APP_ENV=local
+          APP_KEY=
+          APP_DEBUG=true
+          APP_URL=http://localhost:8000
+
+          LOG_CHANNEL=stack
+          LOG_LEVEL=debug
+
+          DB_CONNECTION=pgsql
+          DB_HOST=127.0.0.1
+          DB_PORT=5432
+          DB_DATABASE=leadpally
+          DB_USERNAME=postgres
+          DB_PASSWORD=password
+
+          REDIS_HOST=127.0.0.1
+          REDIS_PASSWORD=null
+          REDIS_PORT=6379
+
+          CACHE_STORE=redis
+          QUEUE_CONNECTION=redis
+          SESSION_DRIVER=redis
+          SESSION_LIFETIME=120
+
+          MAIL_MAILER=smtp
+          MAIL_HOST=127.0.0.1
+          MAIL_PORT=1025
+          MAIL_USERNAME=null
+          MAIL_PASSWORD=null
+          MAIL_ENCRYPTION=null
+          MAIL_FROM_ADDRESS="hello@leadpally.com"
+          MAIL_FROM_NAME="LeadPally"
+
+          SANCTUM_STATEFUL_DOMAINS=localhost:3000
+          SESSION_DOMAIN=localhost
+          FRONTEND_URL=http://localhost:3000
+          EOF
+
+          cat > leadpally-api/routes/api.php << 'EOF'
+          <?php
+
+          use Illuminate\Support\Facades\Route;
+
+          Route::get('/health', fn () => response()->json([
+              'status' => 'healthy',
+              'timestamp' => now()->toIso8601String(),
+          ]));
+          EOF
+
+      - name: Scaffold Next.js frontend
+        run: |
+          npx create-next-app@latest leadpally-frontend --typescript --tailwind --app --src-dir --eslint --use-npm --yes
+          cd leadpally-frontend
+          npm install axios
+          cat > .env.local.example << 'EOF'
+          NEXT_PUBLIC_API_URL=http://localhost:8000/api
+          NEXT_PUBLIC_APP_URL=http://localhost:3000
+          EOF
+
+      - name: Add Docker Compose
+        run: |
+          cat > docker-compose.yml << 'EOF'
+          services:
+            postgres:
+              image: postgres:16-alpine
+              environment:
+                POSTGRES_DB: leadpally
+                POSTGRES_USER: postgres
+                POSTGRES_PASSWORD: password
+              ports:
+                - "5432:5432"
+              volumes:
+                - postgres_data:/var/lib/postgresql/data
+              healthcheck:
+                test: ["CMD-SHELL", "pg_isready -U postgres"]
+                interval: 5s
+                timeout: 5s
+                retries: 5
+
+            redis:
+              image: redis:7-alpine
+              ports:
+                - "6379:6379"
+              volumes:
+                - redis_data:/data
+              healthcheck:
+                test: ["CMD", "redis-cli", "ping"]
+                interval: 5s
+                timeout: 5s
+                retries: 5
+
+            mailpit:
+              image: axllent/mailpit:latest
+              ports:
+                - "1025:1025"
+                - "8025:8025"
+
+          volumes:
+            postgres_data:
+            redis_data:
+          EOF
+
+      - name: Add documentation
+        run: |
+          cat > INSTALL.md << 'EOF'
+          # LeadPally Installation
+
+          ## Prerequisites
+
+          - PHP 8.2+
+          - Composer 2+
+          - Node.js 20+
+          - npm 10+
+          - Docker and Docker Compose
+
+          ## Local Setup
+
+          ```bash
+          git clone https://github.com/bolabankole60-create/LeadPally2.git
+          cd LeadPally2
+
+          docker compose up -d
+
+          cd leadpally-api
+          cp .env.example .env
+          composer install
+          php artisan key:generate
+          php artisan migrate --seed
+          php artisan serve
+
+          cd ../leadpally-frontend
+          cp .env.local.example .env.local
+          npm install
+          npm run dev
+          ```
+
+          ## Local URLs
+
+          - Frontend: http://localhost:3000
+          - API health: http://localhost:8000/api/health
+          - Mailpit: http://localhost:8025
+          EOF
+
+          cat > DEFINITION_OF_DONE.md << 'EOF'
+          # Definition of Done
+
+          A task is complete only when:
+
+          - [ ] It implements the approved frozen architecture.
+          - [ ] Unit and feature tests are added where appropriate.
+          - [ ] Existing tests pass.
+          - [ ] Backend formatting and static checks pass where configured.
+          - [ ] Frontend lint, type check, and build pass.
+          - [ ] Documentation is updated where necessary.
+          - [ ] No critical security issue is introduced.
+          - [ ] The change is reviewed and merged.
+          - [ ] The feature is verified in staging when applicable.
+          EOF
+
+          cat > CONTRIBUTING.md << 'EOF'
+          # Contributing
+
+          1. Create a branch from `main`.
+          2. Implement only the approved scope.
+          3. Follow `ARCHITECTURE.md`.
+          4. Add or update tests.
+          5. Run all checks.
+          6. Open a pull request.
+          7. Merge only after review and green CI.
+          EOF
+
+      - name: Add CI workflow
+        run: |
+          mkdir -p .github/workflows
+          cat > .github/workflows/ci.yml << 'EOF'
+          name: CI
+
+          on:
+            push:
+            pull_request:
+
+          jobs:
+            backend:
+              runs-on: ubuntu-latest
+              services:
+                postgres:
+                  image: postgres:16-alpine
+                  env:
+                    POSTGRES_DB: leadpally_test
+                    POSTGRES_USER: postgres
+                    POSTGRES_PASSWORD: postgres
+                  ports:
+                    - 5432:5432
+                  options: >-
+                    --health-cmd "pg_isready -U postgres"
+                    --health-interval 10s
+                    --health-timeout 5s
+                    --health-retries 5
+              steps:
+                - uses: actions/checkout@v4
+                - uses: shivammathur/setup-php@v2
+                  with:
+                    php-version: '8.2'
+                    extensions: pgsql
+                - name: Install backend dependencies
+                  working-directory: leadpally-api
+                  run: composer install --prefer-dist --no-progress --no-interaction
+                - name: Prepare backend env
+                  working-directory: leadpally-api
+                  run: cp .env.example .env && php artisan key:generate
+                - name: Run backend tests
+                  working-directory: leadpally-api
+                  env:
+                    DB_CONNECTION: pgsql
+                    DB_HOST: 127.0.0.1
+                    DB_PORT: 5432
+                    DB_DATABASE: leadpally_test
+                    DB_USERNAME: postgres
+                    DB_PASSWORD: postgres
+                  run: php artisan test
+
+            frontend:
+              runs-on: ubuntu-latest
+              steps:
+                - uses: actions/checkout@v4
+                - uses: actions/setup-node@v4
+                  with:
+                    node-version: '20'
+                    cache: npm
+                    cache-dependency-path: leadpally-frontend/package-lock.json
+                - name: Install frontend dependencies
+                  working-directory: leadpally-frontend
+                  run: npm ci
+                - name: Lint frontend
+                  working-directory: leadpally-frontend
+                  run: npm run lint
+                - name: Build frontend
+                  working-directory: leadpally-frontend
+                  run: npm run build
+          EOF
+
+      - name: Verify backend
+        working-directory: leadpally-api
+        env:
+          DB_CONNECTION: pgsql
+          DB_HOST: 127.0.0.1
+          DB_PORT: 5432
+          DB_DATABASE: leadpally_test
+          DB_USERNAME: postgres
+          DB_PASSWORD: postgres
+          CACHE_STORE: array
+          QUEUE_CONNECTION: sync
+          SESSION_DRIVER: file
+        run: |
+          cp .env.example .env
+          php artisan key:generate
+          php artisan migrate --seed
+          php artisan test
+
+      - name: Verify frontend
+        working-directory: leadpally-frontend
+        run: |
+          npm run lint
+          npm run build
+
+      - name: Commit Sprint 1 foundation
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add .
+          git commit -m "Sprint 1: Working LeadPally foundation"
+          git push
