@@ -1,0 +1,15 @@
+name: Sprint 5 CRM Backend
+
+on:
+  workflow_dispatch:
+
+# This workflow will implement:
+# - Saved Leads
+# - Lead Lists
+# - Tags
+# - Notes
+# - Follow-up reminders
+# - Favorites
+# - Lead status pipeline
+# - Backend tests
+# It will verify with PHPUnit before committing changes.
