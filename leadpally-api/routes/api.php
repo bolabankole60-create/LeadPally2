@@ -36,6 +36,7 @@ Route::prefix('v1')->group(function () {
         Route::get('/lead-scoring/rules', [LeadScoringController::class, 'rules']);
         Route::post('/lead-scoring/rules', [LeadScoringController::class, 'createRule']);
         Route::post('/leads/{lead}/calculate-score', [LeadScoringController::class, 'calculate']);
+        Route::post('/leads/{lead}/recalculate-score', [LeadScoringController::class, 'calculate']);
         Route::get('/leads/{lead}/score-history', [LeadScoringController::class, 'history']);
 
         Route::get('/leads', [LeadController::class, 'index']);
