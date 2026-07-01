@@ -5,6 +5,7 @@ use App\Http\Controllers\Api\V1\Campaigns\CampaignController;
 use App\Http\Controllers\Api\V1\Crm\LeadController;
 use App\Http\Controllers\Api\V1\Search\SearchController;
 use App\Http\Controllers\Api\V1\Teams\TeamController;
+use App\Http\Controllers\Api\V1\Workflows\WorkflowController;
 use Illuminate\Support\Facades\Route;
 
 Route::get('/health', fn () => response()->json([
@@ -46,5 +47,10 @@ Route::prefix('v1')->group(function () {
         Route::post('/campaigns/{campaign}/schedule', [CampaignController::class, 'schedule']);
         Route::post('/campaigns/{campaign}/start', [CampaignController::class, 'start']);
         Route::post('/campaigns/{campaign}/complete', [CampaignController::class, 'complete']);
+
+        Route::get('/workflows', [WorkflowController::class, 'index']);
+        Route::post('/workflows', [WorkflowController::class, 'store']);
+        Route::post('/workflows/trigger', [WorkflowController::class, 'trigger']);
+        Route::get('/workflow-runs', [WorkflowController::class, 'runs']);
     });
 });
