@@ -4,6 +4,7 @@ use App\Http\Controllers\Api\V1\Ai\AiAssistantController;
 use App\Http\Controllers\Api\V1\Auth\AuthController;
 use App\Http\Controllers\Api\V1\Campaigns\CampaignController;
 use App\Http\Controllers\Api\V1\Crm\LeadController;
+use App\Http\Controllers\Api\V1\Reports\ReportController;
 use App\Http\Controllers\Api\V1\Scoring\LeadScoringController;
 use App\Http\Controllers\Api\V1\Search\SearchController;
 use App\Http\Controllers\Api\V1\Teams\TeamController;
@@ -66,5 +67,12 @@ Route::prefix('v1')->group(function () {
         Route::post('/ai/conversations', [AiAssistantController::class, 'createConversation']);
         Route::get('/ai/conversations/{conversation}', [AiAssistantController::class, 'show']);
         Route::post('/ai/conversations/{conversation}/chat', [AiAssistantController::class, 'chat']);
+
+        Route::get('/reports/dashboard', [ReportController::class, 'dashboard']);
+        Route::get('/reports/leads', [ReportController::class, 'leads']);
+        Route::get('/reports/revenue', [ReportController::class, 'revenue']);
+        Route::get('/reports/team', [ReportController::class, 'team']);
+        Route::get('/reports/campaigns', [ReportController::class, 'campaigns']);
+        Route::get('/reports/export', [ReportController::class, 'export']);
     });
 });
