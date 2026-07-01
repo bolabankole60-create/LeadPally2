@@ -15,6 +15,17 @@ The format is inspired by Keep a Changelog.
 
 ---
 
+## [Sprint 4B] - Search Frontend
+
+### Added
+- Search page UI
+- Result cards
+- Loading and empty states
+- Error handling
+- Call, website, and save-lead actions
+
+---
+
 ## [Sprint 3] - Teams & Organizations
 
 ### Added
